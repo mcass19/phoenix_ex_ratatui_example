@@ -51,7 +51,7 @@ Quit the TUI with `q`. Quit Phoenix with `Ctrl+C` twice.
 
 ## How the admin TUI is wired up
 
-Three pieces:
+Two pieces:
 
 ### 1. The `ExRatatui.App` module
 
@@ -61,50 +61,51 @@ It subscribes to `PhoenixExRatatuiExample.Chat`'s PubSub topic in `mount/1`,
 re-renders whenever a `{:new_message, _}` arrives, and quits on `q`.
 Standard ExRatatui app — nothing in it knows it's being served over SSH.
 
-### 2. The SSH wrapper
-
-[`lib/phoenix_ex_ratatui_example/admin_tui/ssh.ex`](lib/phoenix_ex_ratatui_example/admin_tui/ssh.ex)
-is a thin shim around `ExRatatui.SSH.Daemon`. It:
-
-- Auto-generates an RSA host key under `priv/ssh/` on first boot
-  (gitignored).
-- Configures dev-only password auth (`admin` / `admin`).
-- Returns a child spec that points at `ExRatatui.SSH.Daemon`.
-
-### 3. The supervision tree
+### 2. The supervision tree
 
 [`lib/phoenix_ex_ratatui_example/application.ex`](lib/phoenix_ex_ratatui_example/application.ex)
-adds the wrapper as a worker, alongside `Phoenix.PubSub`, the chat
-GenServer, and the endpoint:
+adds `ExRatatui.SSH.Daemon` directly as a child, alongside
+`Phoenix.PubSub`, the chat GenServer, and the endpoint:
 
 ```elixir
 children = [
   PhoenixExRatatuiExampleWeb.Telemetry,
   {Phoenix.PubSub, name: PhoenixExRatatuiExample.PubSub},
   PhoenixExRatatuiExample.Chat,
-  {PhoenixExRatatuiExample.AdminTui.SSH, port: 2222},
+  {ExRatatui.SSH.Daemon,
+   mod: PhoenixExRatatuiExample.AdminTui,
+   port: 2222,
+   auto_host_key: true,
+   auth_methods: ~c"password",
+   user_passwords: [{~c"admin", ~c"admin"}]},
   PhoenixExRatatuiExampleWeb.Endpoint
 ]
 ```
 
-That's it. The TUI now boots with the application and is reachable
-over SSH for every client with the password.
+That's it. `auto_host_key: true` is the magic line — the daemon
+generates an RSA host key under `priv/ssh/` on first boot (gitignored)
+and reuses it on every subsequent boot, so SSH clients don't see host
+key warnings between restarts. No wrapper module, no `ssh-keygen`, no
+extra files to maintain.
 
 ## Adapting it to your own Phoenix app
 
 1. Add `{:ex_ratatui, "~> X.Y"}` to `mix.exs`.
-2. Drop the three files above into your project (or write your own).
-3. Replace the chat-specific bits with whatever you want to expose
+2. Drop the admin TUI module above into your project (or write your own).
+3. Add the `ExRatatui.SSH.Daemon` child spec to your `application.ex`,
+   pointing `:mod` at your TUI module.
+4. Replace the chat-specific bits with whatever you want to expose
    in the terminal — recently failing Oban jobs, queue depth, live
    trace of an LV mount, on-call paging stats. Anything you can
    subscribe to over PubSub or query from a context, you can render
    in the TUI.
-4. **Before shipping to anything that isn't your laptop**, swap the
-   dev password for SSH key auth — see
+5. **Before shipping to anything that isn't your laptop**, swap the
+   dev password for SSH key auth and pin `:system_dir` to a directory
+   under your own configuration management — see
    [`ExRatatui.SSH.Daemon`](https://hexdocs.pm/ex_ratatui/ExRatatui.SSH.Daemon.html)
-   for the full options list. The wrapper here uses `auth_methods:
-   ~c"password"` and `user_passwords: [{~c"admin", ~c"admin"}]`
-   purely so the demo is a one-liner — it is not production-safe.
+   for the full options list. `auto_host_key: true` is great for
+   demos and internal tools but it is not production-grade host-key
+   management.
 
 ## Configuration
 
@@ -115,20 +116,20 @@ Disable the admin daemon entirely (e.g. in test):
 config :phoenix_ex_ratatui_example, :ssh_admin, false
 ```
 
-Override its options:
+Override its options (anything you set here wins over the defaults
+baked into `application.ex`):
 
 ```elixir
 # config/runtime.exs
 config :phoenix_ex_ratatui_example, :ssh_admin_opts,
   port: 2222,
-  ssh_user: ~c"ops",
-  ssh_password: ~c"hunter2",
+  auth_methods: ~c"publickey",
+  user_dir: ~c"/etc/ssh/users",
   system_dir: ~c"/etc/ssh"
 ```
 
-Anything you put under `:ssh_admin_opts` is forwarded to
-`ExRatatui.SSH.Daemon.start_link/1` with the wrapper's defaults filled
-in for unspecified keys.
+Passing `:system_dir` automatically disables `:auto_host_key`, so you
+can manage host keys explicitly in production.
 
 ## Tests
 
@@ -142,8 +143,6 @@ Coverage:
 - `AdminTui` — `mount/1`, `render/2`, `handle_event/2`, `handle_info/2`
   plus an end-to-end render through `ExRatatui.Server`'s test backend
   (`test/phoenix_ex_ratatui_example/admin_tui_test.exs`)
-- `AdminTui.SSH` — option building, host-key bootstrap, child spec
-  (`test/phoenix_ex_ratatui_example/admin_tui/ssh_test.exs`)
 - `ChatLive` — render, submit, rename, flash error
   (`test/phoenix_ex_ratatui_example_web/live/chat_live_test.exs`)
 

@@ -30,6 +30,82 @@ defmodule PhoenixExRatatuiExampleWeb.ChatLive do
     {:ok, socket}
   end
 
+  defp random_username do
+    suffix = :crypto.strong_rand_bytes(2) |> Base.encode16(case: :lower)
+    "guest-" <> suffix
+  end
+
+  @impl true
+  def render(assigns) do
+    ~H"""
+    <Layouts.app flash={@flash}>
+      <div class="mx-auto max-w-3xl px-4 py-4 space-y-4">
+        <.header>
+          Phoenix + ExRatatui demo
+          <:subtitle>
+            Post a message in the browser, watch it appear in the SSH admin TUI in real time.
+          </:subtitle>
+        </.header>
+
+        <div class="rounded-box bg-base-200 p-4 flex items-center justify-between">
+          <span class="text-sm opacity-70">Posting as</span>
+          <form id="rename-form" phx-submit="rename" class="flex items-center gap-2">
+            <input
+              type="text"
+              name="username"
+              value={@username}
+              class="input input-sm input-bordered w-44"
+              aria-label="username"
+            />
+            <button type="submit" class="btn btn-sm btn-outline btn-secondary">Rename</button>
+          </form>
+        </div>
+
+        <ul
+          id="messages"
+          phx-update="stream"
+          class="rounded-box bg-base-100 border border-base-300 divide-y divide-base-300 max-h-96 overflow-y-auto"
+        >
+          <li id="messages-empty" class="hidden only:block p-4 text-center text-sm opacity-60">
+            No messages yet — be the first to say hi.
+          </li>
+          <li :for={{dom_id, message} <- @streams.messages} id={dom_id} class="p-3">
+            <div class="flex items-center gap-2 text-sm">
+              <span class="font-semibold">{message.user}</span>
+              <span class="opacity-50 text-xs">
+                {Calendar.strftime(message.inserted_at, "%H:%M:%S")}
+              </span>
+            </div>
+            <p class="mt-1">{message.body}</p>
+          </li>
+        </ul>
+
+        <.form
+          for={@form}
+          id="message-form"
+          phx-submit="send"
+        >
+          <.input
+            field={@form[:body]}
+            type="text"
+            placeholder="Type a message and hit enter…"
+            autocomplete="off"
+          />
+          <div class="flex justify-end">
+            <.button type="submit">Send</.button>
+          </div>
+        </.form>
+
+        <p class="text-xs opacity-60 text-center">
+          Open a terminal and run
+          <code class="px-1 rounded bg-base-300">ssh -p 2222 admin@localhost</code>
+          (password <code class="px-1 rounded bg-base-300">admin</code>) to see the live admin TUI.
+        </p>
+      </div>
+    </Layouts.app>
+    """
+  end
+
   @impl true
   def handle_event("send", %{"message" => %{"body" => body}}, socket) do
     case Chat.post_message(socket.assigns.username, body) do
@@ -66,81 +142,4 @@ defmodule PhoenixExRatatuiExampleWeb.ChatLive do
   end
 
   def handle_info({:presence, _count}, socket), do: {:noreply, socket}
-
-  ## Helpers
-
-  defp random_username do
-    suffix = :crypto.strong_rand_bytes(2) |> Base.encode16(case: :lower)
-    "guest-" <> suffix
-  end
-
-  @impl true
-  def render(assigns) do
-    ~H"""
-    <Layouts.app flash={@flash}>
-      <div class="mx-auto max-w-3xl px-4 py-10 space-y-6">
-        <.header>
-          Phoenix + ExRatatui demo
-          <:subtitle>
-            Post a message in the browser, watch it appear in the SSH admin TUI in real time.
-          </:subtitle>
-        </.header>
-
-        <div class="rounded-box bg-base-200 p-4 flex items-center justify-between">
-          <span class="text-sm opacity-70">Posting as</span>
-          <form id="rename-form" phx-submit="rename" class="flex items-center gap-2">
-            <input
-              type="text"
-              name="username"
-              value={@username}
-              class="input input-sm input-bordered w-44"
-              aria-label="username"
-            />
-            <button type="submit" class="btn btn-sm">Rename</button>
-          </form>
-        </div>
-
-        <ul
-          id="messages"
-          phx-update="stream"
-          class="rounded-box bg-base-100 border border-base-300 divide-y divide-base-300 max-h-96 overflow-y-auto"
-        >
-          <li id="messages-empty" class="hidden only:block p-4 text-center text-sm opacity-60">
-            No messages yet — be the first to say hi.
-          </li>
-          <li :for={{dom_id, message} <- @streams.messages} id={dom_id} class="p-3">
-            <div class="flex items-center gap-2 text-sm">
-              <span class="font-semibold">{message.user}</span>
-              <span class="opacity-50 text-xs">
-                {Calendar.strftime(message.inserted_at, "%H:%M:%S")}
-              </span>
-            </div>
-            <p class="mt-1">{message.body}</p>
-          </li>
-        </ul>
-
-        <.form
-          for={@form}
-          id="message-form"
-          phx-submit="send"
-          class="flex items-center gap-2"
-        >
-          <.input
-            field={@form[:body]}
-            type="text"
-            placeholder="Type a message and hit enter…"
-            autocomplete="off"
-          />
-          <.button type="submit">Send</.button>
-        </.form>
-
-        <p class="text-xs opacity-60 text-center">
-          Open a terminal and run
-          <code class="px-1 rounded bg-base-300">ssh -p 2222 admin@localhost</code>
-          (password <code class="px-1 rounded bg-base-300">admin</code>) to see the live admin TUI.
-        </p>
-      </div>
-    </Layouts.app>
-    """
-  end
 end

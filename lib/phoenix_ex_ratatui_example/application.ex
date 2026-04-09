@@ -17,10 +17,11 @@ defmodule PhoenixExRatatuiExample.Application do
         # both consume. Lives in front of the endpoint so the PubSub it
         # broadcasts on is already up.
         PhoenixExRatatuiExample.Chat,
-        # Optional admin TUI exposed over SSH. Disabled in :test (no
-        # network listener during the suite) and may be disabled in
-        # other environments via `config :phoenix_ex_ratatui_example,
-        # :ssh_admin, false`.
+        # Admin TUI exposed over SSH. `auto_host_key: true` lets the
+        # daemon generate an RSA host key under `priv/ssh/` on first
+        # boot — see `ExRatatui.SSH.Daemon` for the full options list.
+        # The whole child can be disabled (e.g. in :test) via
+        # `config :phoenix_ex_ratatui_example, :ssh_admin, false`.
         ssh_admin_child(),
         PhoenixExRatatuiExampleWeb.Endpoint
       ]
@@ -40,16 +41,35 @@ defmodule PhoenixExRatatuiExample.Application do
     :ok
   end
 
-  # Returns the child spec for the SSH admin TUI, or nil if it should
-  # not be started in the current environment. Kept here so the
-  # supervision tree's intent stays readable.
+  # Returns the SSH admin daemon child spec, or `nil` to skip starting
+  # it in the current environment. The defaults below give the demo a
+  # one-`ssh`-away setup; override `:ssh_admin_opts` from config to
+  # change anything (port, auth method, system_dir, etc).
   defp ssh_admin_child do
     if Application.get_env(:phoenix_ex_ratatui_example, :ssh_admin, true) do
-      ssh_opts =
-        Application.get_env(:phoenix_ex_ratatui_example, :ssh_admin_opts, [])
-        |> Keyword.put_new(:port, 2222)
+      defaults = [
+        mod: PhoenixExRatatuiExample.AdminTui,
+        port: 2222,
+        auto_host_key: true,
+        auth_methods: ~c"password",
+        user_passwords: [{~c"admin", ~c"admin"}]
+      ]
 
-      {PhoenixExRatatuiExample.AdminTui.SSH, ssh_opts}
+      user_opts = Application.get_env(:phoenix_ex_ratatui_example, :ssh_admin_opts, [])
+
+      # Drop the auto-host-key default when the user supplies an
+      # explicit `:system_dir` — the daemon refuses both at once.
+      defaults =
+        if Keyword.has_key?(user_opts, :system_dir) do
+          Keyword.delete(defaults, :auto_host_key)
+        else
+          defaults
+        end
+
+      # Keyword.merge: right wins → user-supplied options override defaults.
+      opts = Keyword.merge(defaults, user_opts)
+
+      {ExRatatui.SSH.Daemon, opts}
     end
   end
 end

@@ -13,14 +13,16 @@ defmodule PhoenixExRatatuiExample.AdminTui do
 
   ## How it gets to your terminal
 
-  The supervision tree starts an `ExRatatui.SSH.Daemon` (see
-  `PhoenixExRatatuiExample.AdminTui.SSH`) that exposes this app
-  module on port `2222`. Any user with the dev credentials runs:
+  The supervision tree starts an `ExRatatui.SSH.Daemon` with
+  `auto_host_key: true`, which generates an RSA host key under
+  `priv/ssh/` on first boot and exposes this app module on port
+  `2222`. Any user with the dev credentials runs:
 
       ssh -p 2222 admin@localhost
 
   and gets their own private TUI session against the running
-  Phoenix node.
+  Phoenix node. See `PhoenixExRatatuiExample.Application` for the
+  child spec.
 
   ## Test mode
 
