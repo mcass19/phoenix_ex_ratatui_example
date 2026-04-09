@@ -134,4 +134,4 @@ The suite never opens a real SSH listener — `config/test.exs` sets `ssh_admin:
 
 ## License
 
-MIT.
+MIT — see [LICENSE](https://github.com/mcass19/phoenix_ex_ratatui_example/blob/main/LICENSE) for details.
