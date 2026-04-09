@@ -2,7 +2,7 @@
 
 A minimal Phoenix 1.8 application with an **admin TUI you reach over SSH**. The web app is a tiny chat room. Everything posted in the browser appears live in any terminal connected to the SSH admin TUI — no special client, no extra port forwarding, no agent on the box.
 
-The point of this repo is to show that any Phoenix or LiveView codebase can ship a real terminal admin dashboard with about 30 lines of code, using [`ExRatatui`](https://github.com/mcass19/ex_ratatui)'s SSH transport.
+The point of this repo is to show that any Phoenix or LiveView codebase can easily ship a real terminal, using [`ExRatatui`](https://github.com/mcass19/ex_ratatui)'s SSH transport.
 
 ## What you get
 
@@ -10,7 +10,7 @@ The point of this repo is to show that any Phoenix or LiveView codebase can ship
 - **`ssh -p 2222 admin@localhost`** — drops you straight into a TUI (`PhoenixExRatatuiExample.AdminTui`) that subscribes to the same `Phoenix.PubSub` topic as the LiveView. New chat messages stream in immediately. Two tabs:
   - **Overview** — node, BEAM uptime, message count, last activity.
   - **Messages** — live tail of the room.
-- **No global TTY required.** Each SSH client gets its own isolated session. Multiple ops engineers can be in the TUI simultaneously without stepping on each other.
+- **No global TTY required.** Each SSH client gets its own isolated session. Multiple can be in the TUI simultaneously without stepping on each other.
 
 ## Quick start
 
@@ -83,14 +83,6 @@ mix run -e "PhoenixExRatatuiExample.AdminTui.run()"
 
 > **Trade-off:** While the local TUI owns the terminal, the SSH daemon child is still up on port 2222 — both transports happily coexist in the same BEAM. If you don't want the listener at all during dev, set `config :phoenix_ex_ratatui_example, :ssh_admin, false` in `config/dev.exs`.
 
-## Adapting it to your own Phoenix app
-
-1. Add `{:ex_ratatui, "~> 0.6"}` to `mix.exs`.
-2. Drop the admin TUI module above into your project (or write your own).
-3. Add `{MyApp.MyTui, transport: :ssh, port: 2222, auto_host_key: true, ...}` to the `children` list in your `application.ex`. The `transport: :ssh` key tells `ExRatatui.App.dispatch_start/1` to start a daemon instead of grabbing the local TTY — same module, same callbacks, different transport.
-4. Replace the chat-specific bits with whatever you want to expose in the terminal — recently failing Oban jobs, queue depth, live trace of an LV mount, on-call paging stats. Anything you can subscribe to over PubSub or query from a context, you can render in the TUI.
-5. **Before shipping to anything that isn't your laptop**, swap the dev password for SSH key auth and pin `:system_dir` to a directory under your own configuration management — see [`ExRatatui.SSH.Daemon`](https://hexdocs.pm/ex_ratatui/ExRatatui.SSH.Daemon.html) for the full options list. `auto_host_key: true` is great for demos and internal tools but it is not production-grade host-key management.
-
 ## Configuration
 
 Disable the admin daemon entirely (e.g. in test):
@@ -118,12 +110,6 @@ Passing `:system_dir` automatically disables `:auto_host_key`, so you can manage
 ```sh
 mix test
 ```
-
-Coverage:
-
-- `Chat` — post / list / stats / broadcast (`test/phoenix_ex_ratatui_example/chat_test.exs`)
-- `AdminTui` — `mount/1`, `render/2`, `handle_event/2`, `handle_info/2` plus an end-to-end render through `ExRatatui.Server`'s test backend (`test/phoenix_ex_ratatui_example/admin_tui_test.exs`)
-- `ChatLive` — render, submit, rename, flash error (`test/phoenix_ex_ratatui_example_web/live/chat_live_test.exs`)
 
 The suite never opens a real SSH listener — `config/test.exs` sets `ssh_admin: false`. The admin TUI's render path is exercised through ExRatatui's headless test backend instead.
 

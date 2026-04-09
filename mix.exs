@@ -61,8 +61,7 @@ defmodule PhoenixExRatatuiExample.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
 
-      # ExRatatui — terminal UI toolkit for Elixir. Ships precompiled
-      # NIFs via `rustler_precompiled`, so no Rust toolchain required.
+      # TUI
       {:ex_ratatui, "~> 0.6"}
     ]
   end
