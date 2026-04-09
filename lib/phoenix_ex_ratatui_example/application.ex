@@ -45,31 +45,43 @@ defmodule PhoenixExRatatuiExample.Application do
   # it in the current environment. The defaults below give the demo a
   # one-`ssh`-away setup; override `:ssh_admin_opts` from config to
   # change anything (port, auth method, system_dir, etc).
-  defp ssh_admin_child do
-    if Application.get_env(:phoenix_ex_ratatui_example, :ssh_admin, true) do
-      defaults = [
-        mod: PhoenixExRatatuiExample.AdminTui,
-        port: 2222,
-        auto_host_key: true,
-        auth_methods: ~c"password",
-        user_passwords: [{~c"admin", ~c"admin"}]
-      ]
+  @doc false
+  def ssh_admin_child do
+    ssh_admin_child(
+      Application.get_env(:phoenix_ex_ratatui_example, :ssh_admin, true),
+      Application.get_env(:phoenix_ex_ratatui_example, :ssh_admin_opts, [])
+    )
+  end
 
-      user_opts = Application.get_env(:phoenix_ex_ratatui_example, :ssh_admin_opts, [])
+  @doc false
+  # Pure two-arg form so tests can drive the merge logic without
+  # touching `Application.put_env/3`. The zero-arg version above is
+  # the only thing the supervision tree calls.
+  def ssh_admin_child(false, _user_opts), do: nil
 
-      # Drop the auto-host-key default when the user supplies an
-      # explicit `:system_dir` — the daemon refuses both at once.
-      defaults =
-        if Keyword.has_key?(user_opts, :system_dir) do
-          Keyword.delete(defaults, :auto_host_key)
-        else
-          defaults
-        end
+  def ssh_admin_child(true, user_opts) when is_list(user_opts) do
+    defaults = [
+      transport: :ssh,
+      port: 2222,
+      auto_host_key: true,
+      auth_methods: ~c"password",
+      user_passwords: [{~c"admin", ~c"admin"}]
+    ]
 
-      # Keyword.merge: right wins → user-supplied options override defaults.
-      opts = Keyword.merge(defaults, user_opts)
+    # Drop the auto-host-key default when the user supplies an
+    # explicit `:system_dir` — the daemon refuses both at once.
+    defaults =
+      if Keyword.has_key?(user_opts, :system_dir) do
+        Keyword.delete(defaults, :auto_host_key)
+      else
+        defaults
+      end
 
-      {ExRatatui.SSH.Daemon, opts}
-    end
+    # `{Mod, opts}` flows through `ExRatatui.App.dispatch_start/1`,
+    # which routes `transport: :ssh` to `ExRatatui.SSH.Daemon` with
+    # `:mod` injected from the module name. The daemon ignores the
+    # `:transport` key on the way through. Right wins on Keyword.merge,
+    # so user-supplied options override defaults.
+    {PhoenixExRatatuiExample.AdminTui, Keyword.merge(defaults, user_opts)}
   end
 end

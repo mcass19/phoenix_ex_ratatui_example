@@ -24,6 +24,24 @@ defmodule PhoenixExRatatuiExample.AdminTui do
   Phoenix node. See `PhoenixExRatatuiExample.Application` for the
   child spec.
 
+  ## Local dev mode
+
+  For fast iteration on the TUI itself you can render it in your
+  current terminal instead of going through SSH. Boot the Phoenix
+  app the usual way and call `run/1`:
+
+      # From an iex session that already started Phoenix:
+      iex -S mix phx.server
+      iex> PhoenixExRatatuiExample.AdminTui.run()
+
+      # Or directly, no iex:
+      mix run -e "PhoenixExRatatuiExample.AdminTui.run()"
+
+  Both flows reuse the same `Phoenix.PubSub` topic the SSH session
+  subscribes to, so messages posted in the browser stream into the
+  local TUI in real time. Press `q` to quit; `run/1` blocks until
+  the TUI process exits, so the BEAM shuts down cleanly with it.
+
   ## Test mode
 
   When started with `test_mode: {w, h}`, the underlying server uses
@@ -230,5 +248,24 @@ defmodule PhoenixExRatatuiExample.AdminTui do
     h = div(seconds, 3600)
     rest = rem(seconds, 3600)
     "#{h}h #{div(rest, 60)}m"
+  end
+
+  ## Local dev entry point
+
+  @doc """
+  Starts the admin TUI in the local terminal and blocks until the
+  user quits with `q`.
+
+  Accepts the same options as `start_link/1`. Intended for `iex -S
+  mix phx.server` and `mix run -e "..."`-style invocations — see the
+  module doc for examples.
+  """
+  def run(opts \\ []) do
+    {:ok, pid} = start_link(opts)
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    end
   end
 end

@@ -61,15 +61,9 @@ defmodule PhoenixExRatatuiExample.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
 
-      # ExRatatui — terminal UI toolkit for Elixir. Pinned to a local
-      # path while the SSH transport branch is unreleased; switch to
-      # `{:ex_ratatui, "~> 0.6"}` once it ships on Hex.
-      {:ex_ratatui, path: "../ex_ratatui"},
-
-      # Optional on the host so `EX_RATATUI_BUILD=1 mix test` can
-      # force-build the Rust NIF against the local ex_ratatui checkout
-      # when the precompiled binary doesn't cover your platform.
-      {:rustler, ">= 0.0.0", optional: true}
+      # ExRatatui — terminal UI toolkit for Elixir. Ships precompiled
+      # NIFs via `rustler_precompiled`, so no Rust toolchain required.
+      {:ex_ratatui, "~> 0.6"}
     ]
   end
 
