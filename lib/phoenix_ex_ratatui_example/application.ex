@@ -33,14 +33,6 @@ defmodule PhoenixExRatatuiExample.Application do
     Supervisor.start_link(children, opts)
   end
 
-  # Tell Phoenix to update the endpoint configuration
-  # whenever the application is updated.
-  @impl true
-  def config_change(changed, _new, removed) do
-    PhoenixExRatatuiExampleWeb.Endpoint.config_change(changed, removed)
-    :ok
-  end
-
   # Returns the SSH admin daemon child spec, or `nil` to skip starting
   # it in the current environment. The defaults below give the demo a
   # one-`ssh`-away setup; override `:ssh_admin_opts` from config to

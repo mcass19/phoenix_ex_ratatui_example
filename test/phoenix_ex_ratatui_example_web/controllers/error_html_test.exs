@@ -1,7 +1,6 @@
 defmodule PhoenixExRatatuiExampleWeb.ErrorHTMLTest do
   use PhoenixExRatatuiExampleWeb.ConnCase, async: true
 
-  # Bring render_to_string/4 for testing custom views
   import Phoenix.Template, only: [render_to_string: 4]
 
   test "renders 404.html" do
@@ -12,5 +11,10 @@ defmodule PhoenixExRatatuiExampleWeb.ErrorHTMLTest do
   test "renders 500.html" do
     assert render_to_string(PhoenixExRatatuiExampleWeb.ErrorHTML, "500", "html", []) ==
              "Internal Server Error"
+  end
+
+  test "render/2 returns status message from template" do
+    assert PhoenixExRatatuiExampleWeb.ErrorHTML.render("503.html", %{}) ==
+             "Service Unavailable"
   end
 end

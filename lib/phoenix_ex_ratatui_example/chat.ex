@@ -61,10 +61,6 @@ defmodule PhoenixExRatatuiExample.Chat do
   @spec reset() :: :ok
   def reset, do: GenServer.call(__MODULE__, :reset)
 
-  @doc "PubSub topic that carries `{:new_message, message}` and `{:presence, count}` events."
-  @spec topic() :: String.t()
-  def topic, do: @topic
-
   @doc "Subscribe the calling process to chat events."
   @spec subscribe() :: :ok | {:error, term()}
   def subscribe, do: PubSub.subscribe(@pubsub, @topic)

@@ -238,13 +238,14 @@ defmodule PhoenixExRatatuiExample.AdminTui do
     end
   end
 
-  defp format_seconds(seconds) when seconds < 60, do: "#{seconds}s"
+  @doc false
+  def format_seconds(seconds) when seconds < 60, do: "#{seconds}s"
 
-  defp format_seconds(seconds) when seconds < 3600 do
+  def format_seconds(seconds) when seconds < 3600 do
     "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
   end
 
-  defp format_seconds(seconds) do
+  def format_seconds(seconds) do
     h = div(seconds, 3600)
     rest = rem(seconds, 3600)
     "#{h}h #{div(rest, 60)}m"

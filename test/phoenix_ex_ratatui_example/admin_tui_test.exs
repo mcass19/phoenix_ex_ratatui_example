@@ -60,6 +60,29 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
       assert total_height == 24
     end
 
+    test "overview tab shows node name and stats with no messages" do
+      {:ok, state} = AdminTui.mount([])
+
+      [_tabs, {body, _}, _footer] = AdminTui.render(state, %Frame{width: 80, height: 24})
+
+      assert %ExRatatui.Widgets.Paragraph{text: text} = body
+      assert text =~ "Node:"
+      assert text =~ "(no messages yet)"
+      assert text =~ "Total messages:    0"
+    end
+
+    test "overview tab shows last activity and last message when present" do
+      {:ok, _} = Chat.post_message("alice", "the answer is 42")
+      {:ok, state} = AdminTui.mount([])
+      state = %{state | last_event_at: DateTime.utc_now()}
+
+      [_tabs, {body, _}, _footer] = AdminTui.render(state, %Frame{width: 80, height: 24})
+
+      assert %ExRatatui.Widgets.Paragraph{text: text} = body
+      assert text =~ "alice: the answer is 42"
+      assert text =~ "UTC"
+    end
+
     test "renders messages tab when state.tab == 1" do
       {:ok, _} = Chat.post_message("alice", "the answer is 42")
       {:ok, state} = AdminTui.mount([])
@@ -70,6 +93,28 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
       assert %ExRatatui.Widgets.List{items: items} = body
       assert Enum.any?(items, &String.contains?(&1, "alice"))
       assert Enum.any?(items, &String.contains?(&1, "the answer is 42"))
+    end
+
+    test "messages tab shows placeholder when empty" do
+      {:ok, state} = AdminTui.mount([])
+      state = %{state | tab: 1}
+
+      [_tabs, {body, _}, _footer] = AdminTui.render(state, %Frame{width: 80, height: 24})
+
+      assert %ExRatatui.Widgets.List{items: [item]} = body
+      assert item =~ "no messages yet"
+    end
+
+    test "messages tab truncates long message bodies" do
+      long_body = String.duplicate("x", 100)
+      {:ok, _} = Chat.post_message("alice", long_body)
+      {:ok, state} = AdminTui.mount([])
+      state = %{state | tab: 1}
+
+      [_tabs, {body, _}, _footer] = AdminTui.render(state, %Frame{width: 80, height: 24})
+
+      assert %ExRatatui.Widgets.List{items: [item]} = body
+      assert String.ends_with?(item, "…")
     end
   end
 
@@ -121,6 +166,16 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
         assert state.tab == 1, "expected #{code} to switch to tab 1"
       end
     end
+
+    test "unknown events are ignored" do
+      state = %{tab: 0}
+
+      assert {:noreply, ^state} =
+               AdminTui.handle_event(
+                 %ExRatatui.Event.Key{code: "z", kind: "press"},
+                 state
+               )
+    end
   end
 
   describe "handle_info/2" do
@@ -138,6 +193,30 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
     test "ignores presence events" do
       {:ok, state} = AdminTui.mount([])
       assert {:noreply, ^state} = AdminTui.handle_info({:presence, 5}, state)
+    end
+
+    test "ignores unknown messages" do
+      {:ok, state} = AdminTui.mount([])
+      assert {:noreply, ^state} = AdminTui.handle_info(:something_else, state)
+    end
+  end
+
+  describe "format_seconds/1" do
+    test "formats seconds under a minute" do
+      assert AdminTui.format_seconds(0) == "0s"
+      assert AdminTui.format_seconds(42) == "42s"
+      assert AdminTui.format_seconds(59) == "59s"
+    end
+
+    test "formats seconds as minutes and seconds" do
+      assert AdminTui.format_seconds(60) == "1m 0s"
+      assert AdminTui.format_seconds(125) == "2m 5s"
+      assert AdminTui.format_seconds(3599) == "59m 59s"
+    end
+
+    test "formats seconds as hours and minutes" do
+      assert AdminTui.format_seconds(3600) == "1h 0m"
+      assert AdminTui.format_seconds(7260) == "2h 1m"
     end
   end
 

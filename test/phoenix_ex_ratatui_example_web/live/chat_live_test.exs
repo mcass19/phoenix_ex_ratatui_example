@@ -53,4 +53,24 @@ defmodule PhoenixExRatatuiExampleWeb.ChatLiveTest do
 
     assert [%Chat.Message{user: "kieran", body: "hi"}] = Chat.list_messages()
   end
+
+  test "rename with empty username shows flash error", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    html =
+      view
+      |> element("#rename-form")
+      |> render_submit(%{username: ""})
+
+    assert html =~ "Username can&#39;t be blank."
+  end
+
+  test "presence events are ignored", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    send(view.pid, {:presence, 42})
+
+    # View still renders fine after receiving the presence event
+    assert render(view) =~ "Phoenix + ExRatatui"
+  end
 end

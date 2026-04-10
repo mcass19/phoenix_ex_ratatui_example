@@ -115,14 +115,11 @@ defmodule PhoenixExRatatuiExampleWeb.ChatLive do
         # reset the form here.
         {:noreply, assign(socket, :form, to_form(%{"body" => ""}, as: :message))}
 
-      {:error, :empty_body} ->
+      {:error, _reason} ->
         {:noreply,
          socket
          |> put_flash(:error, "Message body can't be blank.")
          |> assign(:form, to_form(%{"body" => body}, as: :message))}
-
-      {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Couldn't send message.")}
     end
   end
 
