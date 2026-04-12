@@ -7,9 +7,11 @@ config :phoenix_ex_ratatui_example, PhoenixExRatatuiExampleWeb.Endpoint,
   secret_key_base: "s5HKeZZBQEywetIU2lLCtHj0MKiK4D88ecRU+L0EgFr70kW48L6VpK12bqS5QCSm",
   server: false
 
-# Don't open an SSH listener during the suite — tests drive the
-# admin TUI directly via ExRatatui's :test_mode backend.
+# Don't open an SSH listener or distribution listener during the
+# suite — tests drive the admin TUI directly via ExRatatui's
+# :test_mode backend.
 config :phoenix_ex_ratatui_example, :ssh_admin, false
+config :phoenix_ex_ratatui_example, :distributed_admin, false
 
 # Print only warnings and errors during test
 config :logger, level: :warning

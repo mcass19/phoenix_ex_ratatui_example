@@ -1,8 +1,8 @@
 # Phoenix ExRatatui Example
 
-A minimal Phoenix application with an **admin TUI you reach over SSH**. The web app is a tiny chat room. Everything posted in the browser appears live in any terminal connected to the SSH admin TUI — no special client, no extra port forwarding, no agent on the box.
+A minimal Phoenix application with an **admin TUI you reach over SSH or Erlang distribution**. The web app is a tiny chat room. Everything posted in the browser appears live in any terminal connected to the admin TUI — no special client, no extra port forwarding, no agent on the box.
 
-The point of this repo is to show that any Phoenix or LiveView codebase can easily ship a real terminal UI, using [`ExRatatui`](https://github.com/mcass19/ex_ratatui)'s SSH transport.
+The point of this repo is to show that any Phoenix or LiveView codebase can easily ship a real terminal UI, using [`ExRatatui`](https://github.com/mcass19/ex_ratatui)'s SSH and distribution transports.
 
 ![Phoenix ExRatatui Demo](https://raw.githubusercontent.com/mcass19/phoenix_ex_ratatui_example/main/assets/phoenix_demo.gif)
 
@@ -12,7 +12,8 @@ The point of this repo is to show that any Phoenix or LiveView codebase can easi
 - **`ssh -p 2222 admin@localhost`** — drops you straight into a TUI (`PhoenixExRatatuiExample.AdminTui`) that subscribes to the same `Phoenix.PubSub` topic as the LiveView. New chat messages stream in immediately. Two tabs:
   - **Overview** — node, BEAM uptime, message count, last activity.
   - **Messages** — live tail of the room.
-- **No global TTY required.** Each SSH client gets its own isolated session. Multiple can be in the TUI simultaneously without stepping on each other.
+- **`ExRatatui.Distributed.attach/2`** — from any named BEAM node sharing the same cookie, attach to the admin TUI over Erlang distribution. Same isolated-session model as SSH, but no daemon, no host keys — just BEAM-to-BEAM.
+- **No global TTY required.** Each SSH or distribution client gets its own isolated session. Multiple can be in the TUI simultaneously without stepping on each other.
 
 ## Quick start
 
@@ -29,9 +30,24 @@ Then in two terminals:
 # Browser-side: post some messages
 open http://localhost:4000/
 
-# Terminal-side: watch them stream into the admin TUI
+# Terminal-side: watch them stream into the admin TUI over SSH
 ssh -p 2222 admin@localhost           # password: admin
 ```
+
+Or try distribution instead — start Phoenix as a named node:
+
+```sh
+iex --sname phoenix --cookie demo -S mix phx.server
+```
+
+Then from a second terminal (same project directory):
+
+```sh
+iex --sname client --cookie demo -S mix run --no-start
+iex> ExRatatui.Distributed.attach(:"phoenix@yourmachine", PhoenixExRatatuiExample.AdminTui)
+```
+
+`--no-start` loads all compiled code (including the `ExRatatui` NIF) without booting the Phoenix application, so there's no port conflict with the first terminal. Replace `yourmachine` with the short hostname shown in the first terminal's IEx prompt (the part after `@` in `phoenix@yourmachine`).
 
 Quit the TUI with `q`. Quit Phoenix with `Ctrl+C` twice.
 
@@ -67,6 +83,19 @@ children = [
 That's the whole thing. `transport: :ssh` is what flips the TUI from "render in the local TTY" to "spin up an SSH daemon and serve a fresh session per client". Under the hood `ExRatatui.App.dispatch_start/1` routes the call to `ExRatatui.SSH.Daemon` and injects `:mod` from the module name, so no separate `mod:` key is needed.
 
 `auto_host_key: true` is the other magic line. The daemon generates an RSA host key under `priv/ssh/` on first boot (gitignored) and reuses it on every subsequent boot, so SSH clients don't see host key warnings between restarts. No wrapper module, no `ssh-keygen`, no extra files to maintain.
+
+### 3. The distribution listener
+
+The same `application.ex` also starts an `ExRatatui.Distributed.Listener`:
+
+```elixir
+{ExRatatui.Distributed.Listener,
+ mod: PhoenixExRatatuiExample.AdminTui}
+```
+
+The Listener sits idle until a remote BEAM node calls `ExRatatui.Distributed.attach/2`. Each attaching node gets its own isolated TUI session — the same model as SSH, but over Erlang distribution instead of an SSH channel. No NIF is loaded on the Phoenix node for distribution sessions; widget structs travel as plain BEAM terms and the attaching node renders them locally.
+
+Both transports share the same `AdminTui` module — `mount/1`, `render/2`, `handle_event/2` and `handle_info/2` are transport-agnostic.
 
 ## Running the TUI locally for development
 
@@ -107,10 +136,23 @@ config :phoenix_ex_ratatui_example, :ssh_admin_opts,
 
 Passing `:system_dir` automatically disables `:auto_host_key`, so you can manage host keys explicitly in production.
 
+Disable the distribution listener:
+
+```elixir
+config :phoenix_ex_ratatui_example, :distributed_admin, false
+```
+
+Override its options:
+
+```elixir
+config :phoenix_ex_ratatui_example, :distributed_admin_opts,
+  app_opts: [some_key: "value"]  # merged into every session's mount/1 opts
+```
+
 ## See also
 
-- **[ex_ratatui](https://github.com/mcass19/ex_ratatui)** — the underlying Elixir bindings to Rust [ratatui](https://ratatui.rs), including the [SSH transport guide](https://hexdocs.pm/ex_ratatui/ssh_transport.html).
-- **[nerves_ex_ratatui_example](https://github.com/mcass19/nerves_ex_ratatui_example)** — the Nerves counterpart to this project: two TUIs registered as SSH subsystems on a Raspberry Pi via `nerves_ssh`. Same library, different deployment shape.
+- **[ex_ratatui](https://github.com/mcass19/ex_ratatui)** — the underlying Elixir bindings to Rust [ratatui](https://ratatui.rs), including the [SSH transport guide](https://hexdocs.pm/ex_ratatui/ssh_transport.html) and [distribution transport guide](https://hexdocs.pm/ex_ratatui/distributed_transport.html).
+- **[nerves_ex_ratatui_example](https://github.com/mcass19/nerves_ex_ratatui_example)** — the Nerves counterpart to this project: two TUIs on a Raspberry Pi, reachable over SSH subsystems and Erlang distribution. Same library, different deployment shape.
 
 ## License
 

@@ -23,6 +23,11 @@ defmodule PhoenixExRatatuiExample.Application do
         # The whole child can be disabled (e.g. in :test) via
         # `config :phoenix_ex_ratatui_example, :ssh_admin, false`.
         ssh_admin_child(),
+        # Admin TUI exposed over Erlang distribution. Any named BEAM
+        # node that shares the same cookie can attach with
+        # `ExRatatui.Distributed.attach/2`. Disable the same way as
+        # SSH via `config :phoenix_ex_ratatui_example, :distributed_admin, false`.
+        distributed_admin_child(),
         PhoenixExRatatuiExampleWeb.Endpoint
       ]
       |> Enum.reject(&is_nil/1)
@@ -75,5 +80,25 @@ defmodule PhoenixExRatatuiExample.Application do
     # `:transport` key on the way through. Right wins on Keyword.merge,
     # so user-supplied options override defaults.
     {PhoenixExRatatuiExample.AdminTui, Keyword.merge(defaults, user_opts)}
+  end
+
+  # Returns the distributed-listener child spec, or `nil` to skip.
+  # Uses `ExRatatui.Distributed.Listener` directly (instead of going
+  # through `dispatch_start/1`) so the child spec ID doesn't collide
+  # with the SSH daemon child above — both wrap the same app module.
+  @doc false
+  def distributed_admin_child do
+    distributed_admin_child(
+      Application.get_env(:phoenix_ex_ratatui_example, :distributed_admin, true),
+      Application.get_env(:phoenix_ex_ratatui_example, :distributed_admin_opts, [])
+    )
+  end
+
+  @doc false
+  def distributed_admin_child(false, _user_opts), do: nil
+
+  def distributed_admin_child(true, user_opts) when is_list(user_opts) do
+    defaults = [mod: PhoenixExRatatuiExample.AdminTui]
+    {ExRatatui.Distributed.Listener, Keyword.merge(defaults, user_opts)}
   end
 end
