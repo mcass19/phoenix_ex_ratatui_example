@@ -62,7 +62,7 @@ defmodule PhoenixExRatatuiExample.MixProject do
       {:bandit, "~> 1.5"},
 
       # TUI
-      {:ex_ratatui, "~> 0.6"}
+      {:ex_ratatui, "~> 0.7"}
     ]
   end
 

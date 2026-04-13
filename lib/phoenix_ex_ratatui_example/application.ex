@@ -17,17 +17,13 @@ defmodule PhoenixExRatatuiExample.Application do
         # both consume. Lives in front of the endpoint so the PubSub it
         # broadcasts on is already up.
         PhoenixExRatatuiExample.Chat,
-        # Admin TUI exposed over SSH. `auto_host_key: true` lets the
-        # daemon generate an RSA host key under `priv/ssh/` on first
-        # boot — see `ExRatatui.SSH.Daemon` for the full options list.
-        # The whole child can be disabled (e.g. in :test) via
-        # `config :phoenix_ex_ratatui_example, :ssh_admin, false`.
+        # Admin TUI (callback runtime) exposed over SSH + distribution.
         ssh_admin_child(),
-        # Admin TUI exposed over Erlang distribution. Any named BEAM
-        # node that shares the same cookie can attach with
-        # `ExRatatui.Distributed.attach/2`. Disable the same way as
-        # SSH via `config :phoenix_ex_ratatui_example, :distributed_admin, false`.
         distributed_admin_child(),
+        # Stats TUI (reducer runtime) exposed over SSH + distribution.
+        # Uses a separate SSH port (2223) so both daemons coexist.
+        ssh_stats_reducer_child(),
+        distributed_stats_reducer_child(),
         PhoenixExRatatuiExampleWeb.Endpoint
       ]
       |> Enum.reject(&is_nil/1)
@@ -100,5 +96,61 @@ defmodule PhoenixExRatatuiExample.Application do
   def distributed_admin_child(true, user_opts) when is_list(user_opts) do
     defaults = [mod: PhoenixExRatatuiExample.AdminTui]
     {ExRatatui.Distributed.Listener, Keyword.merge(defaults, user_opts)}
+  end
+
+  # -- Stats Reducer TUI (reducer runtime) --
+
+  @doc false
+  def ssh_stats_reducer_child do
+    ssh_stats_reducer_child(
+      Application.get_env(:phoenix_ex_ratatui_example, :ssh_stats_reducer, true),
+      Application.get_env(:phoenix_ex_ratatui_example, :ssh_stats_reducer_opts, [])
+    )
+  end
+
+  @doc false
+  def ssh_stats_reducer_child(false, _user_opts), do: nil
+
+  def ssh_stats_reducer_child(true, user_opts) when is_list(user_opts) do
+    defaults = [
+      transport: :ssh,
+      name: :stats_reducer_ssh_daemon,
+      port: 2223,
+      auto_host_key: true,
+      auth_methods: ~c"password",
+      user_passwords: [{~c"admin", ~c"admin"}]
+    ]
+
+    defaults =
+      if Keyword.has_key?(user_opts, :system_dir) do
+        Keyword.delete(defaults, :auto_host_key)
+      else
+        defaults
+      end
+
+    Supervisor.child_spec(
+      {PhoenixExRatatuiExample.StatsReducerTui, Keyword.merge(defaults, user_opts)},
+      id: :stats_reducer_ssh
+    )
+  end
+
+  @doc false
+  def distributed_stats_reducer_child do
+    distributed_stats_reducer_child(
+      Application.get_env(:phoenix_ex_ratatui_example, :distributed_stats_reducer, true),
+      Application.get_env(:phoenix_ex_ratatui_example, :distributed_stats_reducer_opts, [])
+    )
+  end
+
+  @doc false
+  def distributed_stats_reducer_child(false, _user_opts), do: nil
+
+  def distributed_stats_reducer_child(true, user_opts) when is_list(user_opts) do
+    defaults = [mod: PhoenixExRatatuiExample.StatsReducerTui, name: :stats_reducer_dist_listener]
+
+    Supervisor.child_spec(
+      {ExRatatui.Distributed.Listener, Keyword.merge(defaults, user_opts)},
+      id: :stats_reducer_dist
+    )
   end
 end
