@@ -1,15 +1,18 @@
 defmodule PhoenixExRatatuiExample.AdminTui do
   @moduledoc """
-  An admin TUI for the Phoenix app, built on `ExRatatui.App`.
+  Admin TUI for the Phoenix app, built on the callback runtime.
 
-  Two tabs:
+  ## Tabs
 
-    * **Overview** — connected runtime stats (BEAM uptime, message
-      count, recent activity rate, last sender) plus a footer with
-      key bindings.
+    * **Overview** — two side-by-side panels with a focus ring:
+      connected runtime stats on the left and a rich-text recent-
+      messages preview on the right. `Tab` / `Shift+Tab` rotate focus;
+      the focused panel's border turns cyan. Drives
+      `ExRatatui.Focus` directly — no LiveComponent-style machinery.
     * **Messages** — live tail of the chat room. New messages stream
-      in via the `PhoenixExRatatuiExample.Chat` PubSub topic — the
-      same topic the browser LiveView subscribes to.
+      in via the `PhoenixExRatatuiExample.Chat` PubSub topic (the same
+      topic the browser LiveView subscribes to) and render through
+      `PhoenixExRatatuiExample.Tui.MessageLine` for per-user color.
 
   ## How it gets to your terminal
 
@@ -26,11 +29,9 @@ defmodule PhoenixExRatatuiExample.AdminTui do
 
   ## Local dev mode
 
-  For fast iteration on the TUI itself you can render it in your
-  current terminal instead of going through SSH. Boot the Phoenix
-  app the usual way and call `run/1`:
+  Iterating on a TUI over SSH is annoying. Render it straight into
+  your current terminal instead:
 
-      # From an iex session that already started Phoenix:
       iex -S mix phx.server
       iex> PhoenixExRatatuiExample.AdminTui.run()
 
@@ -38,28 +39,32 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       mix run -e "PhoenixExRatatuiExample.AdminTui.run()"
 
   Both flows reuse the same `Phoenix.PubSub` topic the SSH session
-  subscribes to, so messages posted in the browser stream into the
-  local TUI in real time. Press `q` to quit; `run/1` blocks until
-  the TUI process exits, so the BEAM shuts down cleanly with it.
+  subscribes to, so messages posted in the browser stream in live.
+  Press `q` to quit.
 
   ## Test mode
 
   When started with `test_mode: {w, h}`, the underlying server uses
-  `ExRatatui`'s headless test backend instead of a real terminal —
-  see `test/phoenix_ex_ratatui_example/admin_tui_test.exs`.
+  `ExRatatui`'s headless test backend — see
+  `test/phoenix_ex_ratatui_example/admin_tui_test.exs`.
   """
 
   use ExRatatui.App
 
   alias ExRatatui.Event
+  alias ExRatatui.Focus
   alias ExRatatui.Frame
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
-  alias ExRatatui.Widgets.{Block, List, Paragraph, Tabs}
+  alias ExRatatui.Text.{Line, Span}
+  alias ExRatatui.Widgets.{Block, Paragraph, Tabs}
+  alias ExRatatui.Widgets.List, as: WList
   alias PhoenixExRatatuiExample.Chat
+  alias PhoenixExRatatuiExample.Tui.MessageLine
 
   @tabs ~w(Overview Messages)
+  @overview_panels [:stats, :recent]
 
   @impl true
   def mount(_opts) do
@@ -71,7 +76,8 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       messages: Chat.list_messages() |> Enum.reverse(),
       stats: Chat.stats(),
       boot_time: boot_time,
-      last_event_at: nil
+      last_event_at: nil,
+      focus: Focus.new(@overview_panels)
     }
 
     {:ok, state}
@@ -84,11 +90,13 @@ defmodule PhoenixExRatatuiExample.AdminTui do
     [tabs_area, body_area, footer_area] =
       Layout.split(area, :vertical, [{:length, 3}, {:min, 0}, {:length, 3}])
 
-    [
-      {render_tabs(state), tabs_area},
-      {render_body(state, body_area), body_area},
-      {render_footer(state), footer_area}
-    ]
+    body_widgets =
+      case state.tab do
+        0 -> overview_widgets(state, body_area)
+        1 -> [{messages_list(state), body_area}]
+      end
+
+    [{render_tabs(state), tabs_area} | body_widgets] ++ [{render_footer(state), footer_area}]
   end
 
   @impl true
@@ -96,14 +104,32 @@ defmodule PhoenixExRatatuiExample.AdminTui do
     {:stop, state}
   end
 
-  def handle_event(%Event.Key{code: code, kind: "press"}, state)
-      when code in ["1", "h", "left"] do
+  # Tab / Shift+Tab only cycle panel focus while the Overview tab is
+  # active — on the Messages tab they switch tabs like the other
+  # shortcuts. We route to Focus.handle_key/2 first; if it consumed
+  # the event we stop, otherwise we fall through to tab navigation.
+  def handle_event(%Event.Key{code: code, kind: "press"} = key, %{tab: 0} = state)
+      when code in ["tab", "back_tab"] do
+    {focus, _} = Focus.handle_key(state.focus, key)
+    {:noreply, %{state | focus: focus}}
+  end
+
+  def handle_event(%Event.Key{code: "1", kind: "press"}, state) do
     {:noreply, %{state | tab: 0}}
   end
 
-  def handle_event(%Event.Key{code: code, kind: "press"}, state)
-      when code in ["2", "l", "right"] do
+  def handle_event(%Event.Key{code: "2", kind: "press"}, state) do
     {:noreply, %{state | tab: 1}}
+  end
+
+  def handle_event(%Event.Key{code: code, kind: "press"}, state)
+      when code in ["h", "left"] do
+    {:noreply, %{state | tab: max(state.tab - 1, 0)}}
+  end
+
+  def handle_event(%Event.Key{code: code, kind: "press"}, state)
+      when code in ["l", "right"] do
+    {:noreply, %{state | tab: min(state.tab + 1, length(@tabs) - 1)}}
   end
 
   def handle_event(%Event.Key{code: "tab", kind: "press"}, state) do
@@ -143,26 +169,23 @@ defmodule PhoenixExRatatuiExample.AdminTui do
     }
   end
 
-  defp render_body(state, _area) do
-    case state.tab do
-      0 -> overview_paragraph(state)
-      1 -> messages_list(state)
-    end
+  defp overview_widgets(state, area) do
+    [left_area, right_area] =
+      Layout.split(area, :horizontal, [{:percentage, 50}, {:percentage, 50}])
+
+    [
+      {stats_panel(state), left_area},
+      {recent_messages_panel(state), right_area}
+    ]
   end
 
-  defp overview_paragraph(state) do
+  defp stats_panel(state) do
     uptime_seconds = System.monotonic_time(:second) - state.boot_time
 
     last_event =
       case state.last_event_at do
         nil -> "—"
         %DateTime{} = dt -> Calendar.strftime(dt, "%H:%M:%S UTC")
-      end
-
-    last_message =
-      case state.messages do
-        [] -> "(no messages yet)"
-        [msg | _] -> "#{msg.user}: #{truncate(msg.body, 60)}"
       end
 
     text =
@@ -175,7 +198,6 @@ defmodule PhoenixExRatatuiExample.AdminTui do
         Unique users:      #{state.stats.unique_users}
 
         Last activity:     #{last_event}
-        Last message:      #{last_message}
 
         Live LiveView URL: http://localhost:4000/
       """
@@ -186,8 +208,38 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: :cyan},
-        title: "Overview"
+        border_style: border_style(state.focus, :stats),
+        title: panel_title("Stats", state.focus, :stats)
+      }
+    }
+  end
+
+  defp recent_messages_panel(state) do
+    items =
+      case state.messages do
+        [] ->
+          [
+            %Line{
+              spans: [
+                %Span{content: "(no messages yet)", style: %Style{fg: :dark_gray}}
+              ]
+            }
+          ]
+
+        messages ->
+          messages
+          |> Enum.take(10)
+          |> Enum.map(&MessageLine.render(&1, max_body: 60))
+      end
+
+    %WList{
+      items: items,
+      style: %Style{fg: :white},
+      block: %Block{
+        borders: [:all],
+        border_type: :rounded,
+        border_style: border_style(state.focus, :recent),
+        title: panel_title("Recent", state.focus, :recent)
       }
     }
   end
@@ -196,18 +248,25 @@ defmodule PhoenixExRatatuiExample.AdminTui do
     items =
       case state.messages do
         [] ->
-          ["(no messages yet — post one in the browser at http://localhost:4000/)"]
+          [
+            %Line{
+              spans: [
+                %Span{
+                  content:
+                    "(no messages yet — post one in the browser at http://localhost:4000/)",
+                  style: %Style{fg: :dark_gray}
+                }
+              ]
+            }
+          ]
 
         messages ->
           messages
           |> Enum.take(50)
-          |> Enum.map(fn msg ->
-            "[#{Calendar.strftime(msg.inserted_at, "%H:%M:%S")}] " <>
-              "#{msg.user}: #{truncate(msg.body, 80)}"
-          end)
+          |> Enum.map(&MessageLine.render(&1, max_body: 80))
       end
 
-    %List{
+    %WList{
       items: items,
       style: %Style{fg: :white},
       block: %Block{
@@ -219,9 +278,15 @@ defmodule PhoenixExRatatuiExample.AdminTui do
     }
   end
 
-  defp render_footer(_state) do
+  defp render_footer(state) do
+    hint =
+      case state.tab do
+        0 -> " Tab/Shift+Tab: focus panel   1/2: switch tabs   q: quit"
+        _ -> " Tab/1/2: switch tabs   q: quit"
+      end
+
     %Paragraph{
-      text: " Tab/1/2: switch tabs   q: quit",
+      text: hint,
       style: %Style{fg: :dark_gray},
       block: %Block{
         borders: [:top],
@@ -230,12 +295,14 @@ defmodule PhoenixExRatatuiExample.AdminTui do
     }
   end
 
-  defp truncate(string, max) when is_binary(string) do
-    if String.length(string) > max do
-      String.slice(string, 0, max - 1) <> "…"
-    else
-      string
-    end
+  defp border_style(focus, id) do
+    if Focus.focused?(focus, id),
+      do: %Style{fg: :cyan, modifiers: [:bold]},
+      else: %Style{fg: :dark_gray}
+  end
+
+  defp panel_title(base, focus, id) do
+    if Focus.focused?(focus, id), do: "#{base} ●", else: base
   end
 
   @doc false

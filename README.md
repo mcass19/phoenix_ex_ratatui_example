@@ -1,16 +1,16 @@
 # Phoenix ExRatatui Example
 
-A minimal Phoenix application with an **admin TUI you reach over SSH or Erlang distribution**. The web app is a tiny chat room. Everything posted in the browser appears live in any terminal connected to the admin TUI — no special client, no extra port forwarding, no agent on the box.
+A minimal Phoenix application with an **admin and stats TUI you reach over SSH or Erlang distribution**. The web app is a tiny chat room. Everything posted in the browser appears live in any terminal connected to the TUI — no special client, no extra port forwarding, no agent on the box.
 
-The point of this repo is to show that any Phoenix or LiveView codebase can easily ship a real terminal UI, using [`ExRatatui`](https://github.com/mcass19/ex_ratatui)'s SSH and distribution transports. It includes two TUI apps: one using the **callback runtime** and one using the **reducer runtime**.
+The point of this repo is to show that any Phoenix or LiveView codebase can easily ship a real terminal UI, using [`ExRatatui`](https://github.com/mcass19/ex_ratatui)'s SSH and distribution transports.
 
 ![Phoenix ExRatatui Demo](https://raw.githubusercontent.com/mcass19/phoenix_ex_ratatui_example/main/assets/phoenix_demo.gif)
 
 ## What you get
 
 - **`/`** — a public chat room LiveView (`PhoenixExRatatuiExampleWeb.ChatLive`). Pick a username, post a message, watch others post in real time.
-- **`ssh -p 2222 admin@localhost`** — drops you straight into the **Admin TUI** (`AdminTui`, callback runtime) that subscribes to the same `Phoenix.PubSub` topic as the LiveView. Two tabs: Overview and Messages.
-- **`ssh -p 2223 admin@localhost`** — drops you into the **Stats TUI** (`StatsReducerTui`, reducer runtime). Same data, but built with `init/1`, `update/2`, `subscriptions/1`, and `Command.async/2`.
+- **`ssh -p 2222 admin@localhost`** — the **Admin TUI** (`AdminTui`, **callback runtime**). Two tabs: Overview (two side-by-side panels driven by `ExRatatui.Focus` — `Tab`/`Shift+Tab` rotates which panel's border lights up) and Messages (rich-text list where every username gets a stable hash-based color via `Span`/`Line`).
+- **`ssh -p 2223 admin@localhost`** — the **Stats TUI** (`StatsReducerTui`, **reducer runtime**). A real-time dashboard driven by a 1-second `subscriptions/1` tick. Three tabs: Dashboard (a `Sparkline` of messages/tick, a horizontal `BarChart` of top posters, and a two-dataset `Chart` of totals over the last 60s), Messages (same rich-text renderer as AdminTui), and Calendar (a monthly `Calendar` widget heatmap'd by per-day message counts).
 - **`ExRatatui.Distributed.attach/2`** — from any named BEAM node sharing the same cookie, attach to either TUI over Erlang distribution. Same isolated-session model as SSH, but no daemon, no host keys — just BEAM-to-BEAM.
 - **No global TTY required.** Each SSH or distribution client gets its own isolated session. Multiple can be in the TUI simultaneously without stepping on each other.
 
@@ -56,16 +56,21 @@ Quit the TUI with `q`. Quit Phoenix with `Ctrl+C` twice.
 
 ### 1. The `ExRatatui.App` modules
 
-**Admin TUI (callback runtime)** — [`lib/phoenix_ex_ratatui_example/admin_tui.ex`](lib/phoenix_ex_ratatui_example/admin_tui.ex) implements `mount/1`, `render/2`, `handle_event/2`, and `handle_info/2`. It subscribes to `PhoenixExRatatuiExample.Chat`'s PubSub topic in `mount/1`, re-renders whenever a `{:new_message, _}` arrives, and quits on `q`. Standard ExRatatui app, nothing in it knows it's being served over SSH.
+**Admin TUI (callback runtime)** — [`lib/phoenix_ex_ratatui_example/admin_tui.ex`](lib/phoenix_ex_ratatui_example/admin_tui.ex) implements `mount/1`, `render/2`, `handle_event/2`, and `handle_info/2`. Subscribes to `PhoenixExRatatuiExample.Chat`'s PubSub topic in `mount/1`, re-renders whenever a `{:new_message, _}` arrives. On the Overview tab it showcases:
 
-**Stats TUI (reducer runtime)** — [`lib/phoenix_ex_ratatui_example/stats_reducer_tui.ex`](lib/phoenix_ex_ratatui_example/stats_reducer_tui.ex) uses `ExRatatui.App, runtime: :reducer`. Instead of separate `handle_event/2` and `handle_info/2`, all messages flow through a single `update/2`. It showcases:
+- **`ExRatatui.Focus`** — tiny focus-ring state machine that tracks which panel owns keystrokes. `Tab`/`Shift+Tab` rotates focus; `Focus.focused?/2` drives the border-style toggle without `Focus` ever touching widget structs.
+- **Rich-text `Span`/`Line`** — the recent-messages panel (and the full Messages tab) renders each post as a `%Line{}` of color-coded spans via [`Tui.MessageLine`](lib/phoenix_ex_ratatui_example/tui/message_line.ex): dim-gray timestamp, hash-derived per-user color for the name, white body.
 
-- **`Subscription.interval/3`** — periodic stats refresh declared in `subscriptions/1`, auto-reconciled by the runtime (no manual `Process.send_after`)
-- **`Command.async/2`** — chat stats fetched off the server process so it never blocks
-- **`Command.send_after/2`** — "new message" notification that auto-dismisses after 3 seconds
-- **`Command.batch/1`** — grouping multiple commands in a single return
+**Stats TUI (reducer runtime)** — [`lib/phoenix_ex_ratatui_example/stats_reducer_tui.ex`](lib/phoenix_ex_ratatui_example/stats_reducer_tui.ex) uses `ExRatatui.App, runtime: :reducer` — all messages flow through a single `update/2`. The 1-second `subscriptions/1` tick fires an async command that snapshots `Chat.stats/0`, `Chat.per_user_counts/0`, and `Chat.per_day_counts/0` in one call; the reducer appends to a 60-sample rolling history and hands the whole thing to the widgets. It showcases:
 
-Both modules subscribe to the same PubSub topic and share the same `Chat` GenServer — they just structure the handling differently.
+- **`ExRatatui.Widgets.Sparkline`** — messages per tick over the last 60s, auto-scaled.
+- **`ExRatatui.Widgets.BarChart`** — horizontal chart of the top 5 posters, each bar colored by the same hash used for rich-text usernames.
+- **`ExRatatui.Widgets.Chart`** — two-dataset line chart of cumulative messages and unique users over the history window, with axes and legend.
+- **`ExRatatui.Widgets.Calendar`** — monthly heatmap on the Calendar tab; each day gets a style bucketed on its message count.
+- **`Subscription.interval/3`** — periodic tick declared, not hand-rolled with `Process.send_after`.
+- **`Command.async/2` + `Command.send_after/2` + `Command.batch/1`** — snapshotting data off the server process, scheduling the notification auto-dismiss, and grouping both in a single `{:new_message, _}` return.
+
+Both modules subscribe to the same PubSub topic and share the same `Chat` GenServer — they just structure the handling differently and render very different views of it.
 
 ### 2. The supervision tree
 

@@ -71,4 +71,62 @@ defmodule PhoenixExRatatuiExample.ApplicationTest do
       assert PhxApp.ssh_admin_child() == nil
     end
   end
+
+  describe "distributed_admin_child/2" do
+    test "returns nil when disabled" do
+      assert PhxApp.distributed_admin_child(false, []) == nil
+    end
+
+    test "returns a listener child spec with the admin TUI module by default" do
+      assert {ExRatatui.Distributed.Listener, opts} = PhxApp.distributed_admin_child(true, [])
+      assert opts[:mod] == PhoenixExRatatuiExample.AdminTui
+    end
+
+    test "user options merge into the defaults" do
+      {ExRatatui.Distributed.Listener, opts} =
+        PhxApp.distributed_admin_child(true, app_opts: [extra: :yes])
+
+      assert opts[:mod] == PhoenixExRatatuiExample.AdminTui
+      assert opts[:app_opts] == [extra: :yes]
+    end
+  end
+
+  describe "ssh_stats_reducer_child/2" do
+    test "returns nil when disabled" do
+      assert PhxApp.ssh_stats_reducer_child(false, []) == nil
+    end
+
+    test "returns a daemon child spec on port 2223 with a unique child ID" do
+      assert %{id: :stats_reducer_ssh, start: {mod, :start_link, [opts]}} =
+               PhxApp.ssh_stats_reducer_child(true, [])
+
+      assert mod == PhoenixExRatatuiExample.StatsReducerTui
+      assert opts[:transport] == :ssh
+      assert opts[:port] == 2223
+      assert opts[:auto_host_key] == true
+    end
+
+    test "explicit :system_dir drops the :auto_host_key default" do
+      %{start: {_, :start_link, [opts]}} =
+        PhxApp.ssh_stats_reducer_child(true, system_dir: ~c"/etc/ex_ratatui/host_keys")
+
+      refute Keyword.has_key?(opts, :auto_host_key)
+      assert opts[:system_dir] == ~c"/etc/ex_ratatui/host_keys"
+    end
+  end
+
+  describe "distributed_stats_reducer_child/2" do
+    test "returns nil when disabled" do
+      assert PhxApp.distributed_stats_reducer_child(false, []) == nil
+    end
+
+    test "returns a listener child spec with the stats TUI module and a unique child ID" do
+      assert %{id: :stats_reducer_dist, start: {mod, :start_link, [opts]}} =
+               PhxApp.distributed_stats_reducer_child(true, [])
+
+      assert mod == ExRatatui.Distributed.Listener
+      assert opts[:mod] == PhoenixExRatatuiExample.StatsReducerTui
+      assert opts[:name] == :stats_reducer_dist_listener
+    end
+  end
 end

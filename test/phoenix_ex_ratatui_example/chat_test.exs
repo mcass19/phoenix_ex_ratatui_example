@@ -72,6 +72,36 @@ defmodule PhoenixExRatatuiExample.ChatTest do
     end
   end
 
+  describe "per_user_counts/0" do
+    test "returns counts sorted desc by count, then asc by user" do
+      {:ok, _} = Chat.post_message("alice", "1")
+      {:ok, _} = Chat.post_message("alice", "2")
+      {:ok, _} = Chat.post_message("bob", "3")
+      {:ok, _} = Chat.post_message("carol", "4")
+      {:ok, _} = Chat.post_message("carol", "5")
+
+      assert [{"alice", 2}, {"carol", 2}, {"bob", 1}] = Chat.per_user_counts()
+    end
+
+    test "returns [] for an empty room" do
+      assert Chat.per_user_counts() == []
+    end
+  end
+
+  describe "per_day_counts/0" do
+    test "groups messages by their UTC date" do
+      {:ok, _} = Chat.post_message("alice", "hi")
+      {:ok, _} = Chat.post_message("bob", "there")
+
+      counts = Chat.per_day_counts()
+      assert counts[Date.utc_today()] == 2
+    end
+
+    test "returns an empty map for an empty room" do
+      assert Chat.per_day_counts() == %{}
+    end
+  end
+
   describe "broadcast_presence/1" do
     test "broadcasts a {:presence, count} message to subscribers" do
       :ok = Chat.subscribe()

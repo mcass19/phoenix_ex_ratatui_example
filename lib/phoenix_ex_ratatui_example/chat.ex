@@ -47,6 +47,14 @@ defmodule PhoenixExRatatuiExample.Chat do
   @spec stats() :: %{messages: non_neg_integer(), unique_users: non_neg_integer()}
   def stats, do: GenServer.call(__MODULE__, :stats)
 
+  @doc "Returns `[{user, count}]` sorted by count desc, then user asc. Used by the reducer TUI's BarChart."
+  @spec per_user_counts() :: [{String.t(), non_neg_integer()}]
+  def per_user_counts, do: GenServer.call(__MODULE__, :per_user_counts)
+
+  @doc "Returns `%{Date.t() => count}` of messages per calendar day (UTC). Used by the reducer TUI's Calendar heatmap."
+  @spec per_day_counts() :: %{Date.t() => non_neg_integer()}
+  def per_day_counts, do: GenServer.call(__MODULE__, :per_day_counts)
+
   @doc "Posts a new message and broadcasts it on the chat topic."
   @spec post_message(String.t(), String.t()) :: {:ok, Message.t()} | {:error, term()}
   def post_message(user, body) do
@@ -91,6 +99,23 @@ defmodule PhoenixExRatatuiExample.Chat do
   def handle_call(:stats, _from, state) do
     unique = state.messages |> Enum.map(& &1.user) |> Enum.uniq() |> length()
     {:reply, %{messages: length(state.messages), unique_users: unique}, state}
+  end
+
+  def handle_call(:per_user_counts, _from, state) do
+    counts =
+      state.messages
+      |> Enum.frequencies_by(& &1.user)
+      |> Enum.sort_by(fn {user, count} -> {-count, user} end)
+
+    {:reply, counts, state}
+  end
+
+  def handle_call(:per_day_counts, _from, state) do
+    counts =
+      state.messages
+      |> Enum.frequencies_by(&DateTime.to_date(&1.inserted_at))
+
+    {:reply, counts, state}
   end
 
   @impl true
