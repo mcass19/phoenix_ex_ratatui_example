@@ -147,16 +147,15 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
   end
 
   describe "render/2 — footer" do
-    test "footer shows notification when present" do
+    test "footer shows actions" do
       {:ok, state} = AdminTui.init([])
-      state = %{state | notification: "New message from alice"}
 
       widgets = AdminTui.render(state, %Frame{width: 120, height: 40})
 
       {footer, _} = List.last(widgets)
       assert %Paragraph{text: %Line{spans: spans}} = footer
       text = Enum.map_join(spans, "", & &1.content)
-      assert text =~ "New message from alice"
+      assert text =~ " Tab  cycle  q  quit"
     end
   end
 
@@ -166,33 +165,11 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
       assert {:stop, ^state} = AdminTui.update({:event, key("q")}, state)
     end
 
-    test "number keys jump directly to tabs" do
+    test "tab cycles" do
       {:ok, state} = AdminTui.init([])
-
-      {:noreply, state} = AdminTui.update({:event, key("2")}, state)
-      assert state.tab == 1
-
-      {:noreply, state} = AdminTui.update({:event, key("1")}, state)
-      assert state.tab == 0
-    end
-
-    test "l / right step forward, h / left step back, tab cycles" do
-      {:ok, state} = AdminTui.init([])
-
-      {:noreply, state} = AdminTui.update({:event, key("l")}, state)
-      assert state.tab == 1
-      # clamp at last tab
-      {:noreply, same} = AdminTui.update({:event, key("right")}, state)
-      assert same.tab == 1
-
-      {:noreply, state} = AdminTui.update({:event, key("h")}, same)
-      assert state.tab == 0
-      # clamp at first tab
-      {:noreply, same} = AdminTui.update({:event, key("left")}, state)
-      assert same.tab == 0
 
       # tab cycles 0 → 1 → 0
-      {:noreply, state} = AdminTui.update({:event, key("tab")}, same)
+      {:noreply, state} = AdminTui.update({:event, key("tab")}, state)
       assert state.tab == 1
       {:noreply, state} = AdminTui.update({:event, key("tab")}, state)
       assert state.tab == 0
@@ -306,7 +283,6 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
 
         assert content =~ "Phoenix"
         assert content =~ "ExRatatui"
-        assert content =~ "Admin TUI"
         assert content =~ "Dashboard"
 
         snapshot = ExRatatui.Runtime.snapshot(pid)

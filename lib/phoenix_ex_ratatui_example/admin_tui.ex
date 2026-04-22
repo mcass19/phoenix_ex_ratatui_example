@@ -110,28 +110,12 @@ defmodule PhoenixExRatatuiExample.AdminTui do
         1 -> [{messages_list(state), body_area}]
       end
 
-    [{render_tabs(state), tabs_area} | body_widgets] ++ [{render_footer(state), footer_area}]
+    [{render_tabs(state), tabs_area} | body_widgets] ++ [{render_footer(), footer_area}]
   end
 
   @impl true
   def update({:event, %Event.Key{code: "q", kind: "press"}}, state) do
     {:stop, state}
-  end
-
-  def update({:event, %Event.Key{code: "1", kind: "press"}}, state),
-    do: {:noreply, %{state | tab: 0}}
-
-  def update({:event, %Event.Key{code: "2", kind: "press"}}, state),
-    do: {:noreply, %{state | tab: 1}}
-
-  def update({:event, %Event.Key{code: code, kind: "press"}}, state)
-      when code in ["l", "right"] do
-    {:noreply, %{state | tab: min(state.tab + 1, length(@tabs) - 1)}}
-  end
-
-  def update({:event, %Event.Key{code: code, kind: "press"}}, state)
-      when code in ["h", "left"] do
-    {:noreply, %{state | tab: max(state.tab - 1, 0)}}
   end
 
   def update({:event, %Event.Key{code: "tab", kind: "press"}}, state) do
@@ -198,11 +182,11 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       titles: @tabs,
       selected: state.tab,
       style: %Style{fg: :gray},
-      highlight_style: %Style{fg: @exratatui_violet, modifiers: [:bold]},
+      highlight_style: %Style{fg: :cyan, modifiers: [:bold]},
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: :dark_gray},
+        border_style: %Style{fg: :cyan},
         title: brand_title()
       }
     }
@@ -213,59 +197,27 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       spans: [
         %Span{content: " ", style: %Style{}},
         %Span{
-          content: "Phoenix",
-          style: %Style{fg: @phoenix_orange, modifiers: [:bold]}
-        },
-        %Span{content: " + ", style: %Style{fg: :dark_gray}},
-        %Span{
           content: "ExRatatui",
           style: %Style{fg: @exratatui_violet, modifiers: [:bold]}
         },
-        %Span{content: " — Admin TUI ", style: %Style{fg: :gray}}
+        %Span{content: " + ", style: %Style{fg: :dark_gray}},
+        %Span{
+          content: "Phoenix ",
+          style: %Style{fg: @phoenix_orange, modifiers: [:bold]}
+        }
       ]
     }
   end
 
-  defp render_footer(state) do
-    hints = [
-      {"Tab", "cycle"},
-      {"1/2", "jump"},
-      {"h/l", "step"},
-      {"q", "quit"}
-    ]
-
-    spans =
-      hints
-      |> Enum.flat_map(fn {key, label} ->
-        [
-          %Span{content: "  ", style: %Style{}},
-          %Span{content: key, style: %Style{fg: @exratatui_violet, modifiers: [:bold]}},
-          %Span{content: " " <> label, style: %Style{fg: :dark_gray}}
-        ]
-      end)
-
-    spans =
-      case state.notification do
-        nil ->
-          spans
-
-        text ->
-          spans ++
-            [
-              %Span{content: "   │  ", style: %Style{fg: :dark_gray}},
-              %Span{
-                content: text,
-                style: %Style{fg: @phoenix_orange, modifiers: [:italic]}
-              }
-            ]
-      end
-
+  defp render_footer() do
     %Paragraph{
-      text: %Line{spans: spans},
-      block: %Block{
-        borders: [:top],
-        border_style: %Style{fg: :dark_gray}
-      }
+      text:
+        Line.new([
+          Span.new(" Tab ", style: %Style{bg: :cyan, fg: :black, modifiers: [:bold]}),
+          Span.new(" cycle ", style: %Style{fg: :dark_gray}),
+          Span.new(" q ", style: %Style{bg: :red, fg: :white, modifiers: [:bold]}),
+          Span.new(" quit")
+        ])
     }
   end
 
@@ -325,10 +277,10 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: @exratatui_violet},
+        border_style: %Style{fg: :blue},
         title: %Span{
           content: " Overview ",
-          style: %Style{fg: @exratatui_violet, modifiers: [:bold]}
+          style: %Style{fg: :blue, modifiers: [:bold]}
         }
       }
     }
@@ -345,7 +297,7 @@ defmodule PhoenixExRatatuiExample.AdminTui do
   defp value(text), do: %Span{content: text, style: %Style{fg: :white, modifiers: [:bold]}}
 
   defp accent(text),
-    do: %Span{content: text, style: %Style{fg: @exratatui_violet, modifiers: [:bold]}}
+    do: %Span{content: text, style: %Style{fg: :blue, modifiers: [:bold]}}
 
   defp rate_sparkline(state) do
     max_rate = Enum.max(state.history.rate, fn -> 0 end)
@@ -357,7 +309,7 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: :dark_gray},
+        border_style: %Style{fg: :blue},
         title: " Messages / tick "
       }
     }
@@ -386,7 +338,7 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: :dark_gray},
+        border_style: %Style{fg: :blue},
         title: " Top #{@top_posters} posters "
       }
     }
@@ -436,7 +388,7 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: :dark_gray},
+        border_style: %Style{fg: :blue},
         title: " Totals over time "
       }
     }
@@ -471,10 +423,10 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: @exratatui_violet},
+        border_style: %Style{fg: :blue},
         title: %Span{
           content: " Messages (newest first) ",
-          style: %Style{fg: @exratatui_violet, modifiers: [:bold]}
+          style: %Style{fg: :blue, modifiers: [:bold]}
         }
       }
     }
