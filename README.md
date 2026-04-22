@@ -1,17 +1,14 @@
 # Phoenix ExRatatui Example
 
-A minimal Phoenix application with an **admin TUI you reach over SSH or Erlang distribution**. The web app is a tiny chat room. Everything posted in the browser appears live in the terminal — no special client, no extra port forwarding, no agent on the box.
+A minimal Phoenix application with an **admin TUI you reach over SSH or Erlang distribution**. The web app is a tiny chat room. Everything posted in the browser appears live in the terminal.
 
 The point of this repo is to show that any Phoenix or LiveView codebase can easily ship a real terminal UI, using [`ExRatatui`](https://github.com/mcass19/ex_ratatui)'s SSH and distribution transports.
 
 ## What you get
 
 - **`/`** — a public chat room LiveView (`PhoenixExRatatuiExampleWeb.ChatLive`). Pick a username, post a message, watch others post in real time.
-- **`ssh -p 2222 admin@localhost`** — the **Admin TUI** (`AdminTui`), served over SSH. Two tabs:
-  - **Dashboard** — rich-text overview header · `Sparkline` of messages per tick over the last 60 seconds · horizontal `BarChart` of the top posters · two-dataset `Chart` of cumulative messages and unique users over the history window.
-  - **Messages** — live-tail of the chat room rendered as a rich-text list: dim-gray timestamps, hash-based per-user colors, white bodies.
+- **`ssh -p 2222 admin@localhost`** — the **Admin TUI** (`AdminTui`), served over SSH. Two tabs: Dashboard & Messages.
 - **`ExRatatui.Distributed.attach/2`** — from any named BEAM node sharing the same cookie, attach to the TUI over Erlang distribution. Same isolated-session model as SSH, but no daemon, no host keys — just BEAM-to-BEAM.
-- **No global TTY required.** Each SSH or distribution client gets its own isolated session. Multiple can be in the TUI simultaneously without stepping on each other.
 
 ## Quick start
 
@@ -53,14 +50,7 @@ Quit the TUI with `q`. Quit Phoenix with `Ctrl+C` twice.
 
 ### 1. The `ExRatatui.App` module
 
-[`lib/phoenix_ex_ratatui_example/admin_tui.ex`](lib/phoenix_ex_ratatui_example/admin_tui.ex) uses `ExRatatui.App, runtime: :reducer` — terminal events and mailbox messages flow through a single `update/2`. A 1-second `subscriptions/1` tick fires one `Command.async/2` that snapshots `Chat.stats/0` and `Chat.per_user_counts/0`; the reducer appends the delta to a 60-sample rolling history and the widgets render themselves off state. Features on display:
-
-- **`ExRatatui.Widgets.Sparkline`** — messages per tick over the last 60 seconds, auto-scaled.
-- **`ExRatatui.Widgets.BarChart`** — horizontal chart of the top 5 posters, each bar colored by the same hash used for rich-text usernames.
-- **`ExRatatui.Widgets.Chart`** — two-dataset line chart of cumulative messages and unique users over the history window, with axes and legend.
-- **Rich text `Span`/`Line`** — the branded tabs title (Phoenix orange · ExRatatui violet), the overview header (labels in dim gray, values bold in violet), footer key hints, and every message in the Messages tab via [`Tui.MessageLine`](lib/phoenix_ex_ratatui_example/tui/message_line.ex).
-- **`Subscription.interval/3`** — periodic tick declared, not hand-rolled with `Process.send_after`.
-- **`Command.async/2` + `Command.send_after/2` + `Command.batch/1`** — snapshot data off the server process, schedule the notification auto-dismiss, and ship both in a single `{:new_message, _}` return.
+[`lib/phoenix_ex_ratatui_example/admin_tui.ex`](lib/phoenix_ex_ratatui_example/admin_tui.ex) uses `ExRatatui.App, runtime: :reducer` — terminal events and mailbox messages flow through a single `update/2`. A 1-second `subscriptions/1` tick fires one `Command.async/2` that snapshots `Chat.stats/0` and `Chat.per_user_counts/0`; the reducer appends the delta to a 60-sample rolling history and the widgets render themselves off state.
 
 Nothing in the module knows whether it's being served locally, over SSH, or over distribution. Transport is decided by the supervisor.
 
