@@ -1,83 +1,97 @@
 defmodule PhoenixExRatatuiExample.AdminTui do
   @moduledoc """
-  Admin TUI for the Phoenix app, built on the callback runtime.
+  The admin TUI for the Phoenix app, built on ExRatatui's reducer
+  runtime.
+
+  One TUI, two tabs — served over SSH on port `2222` and over Erlang
+  distribution via `ExRatatui.Distributed.Listener`. Transport-agnostic
+  code: `init/1`, `render/2`, `update/2`, and `subscriptions/1` are the
+  only callbacks that know about the chat state.
 
   ## Tabs
 
-    * **Overview** — two side-by-side panels with a focus ring:
-      connected runtime stats on the left and a rich-text recent-
-      messages preview on the right. `Tab` / `Shift+Tab` rotate focus;
-      the focused panel's border turns cyan. Drives
-      `ExRatatui.Focus` directly — no LiveComponent-style machinery.
-    * **Messages** — live tail of the chat room. New messages stream
-      in via the `PhoenixExRatatuiExample.Chat` PubSub topic (the same
-      topic the browser LiveView subscribes to) and render through
-      `PhoenixExRatatuiExample.Tui.MessageLine` for per-user color.
+    * **1 · Dashboard** — rich-text overview header (node, uptime,
+      totals, last message) · `Sparkline` of messages per tick over
+      the last 60 seconds · horizontal `BarChart` of the top posters ·
+      two-dataset `Chart` of cumulative messages and unique users
+      over the history window.
+    * **2 · Messages** — live-tail of the chat room. Each message
+      renders as a `%Line{}` of colored `%Span{}`s via
+      `PhoenixExRatatuiExample.Tui.MessageLine`: dim-gray timestamp,
+      stable hash-based username color, white body.
 
-  ## How it gets to your terminal
+  The 1-second `subscriptions/1` tick fires a single `Command.async/2`
+  that snapshots `Chat.stats/0` and `Chat.per_user_counts/0`, and the
+  reducer appends the delta to a rolling 60-sample history.
 
-  The supervision tree starts an `ExRatatui.SSH.Daemon` with
-  `auto_host_key: true`, which generates an RSA host key under
-  `priv/ssh/` on first boot and exposes this app module on port
-  `2222`. Any user with the dev credentials runs:
-
-      ssh -p 2222 admin@localhost
-
-  and gets their own private TUI session against the running
-  Phoenix node. See `PhoenixExRatatuiExample.Application` for the
-  child spec.
-
-  ## Local dev mode
-
-  Iterating on a TUI over SSH is annoying. Render it straight into
-  your current terminal instead:
+  ## Running locally
 
       iex -S mix phx.server
       iex> PhoenixExRatatuiExample.AdminTui.run()
 
-      # Or directly, no iex:
+  Or directly:
+
       mix run -e "PhoenixExRatatuiExample.AdminTui.run()"
 
-  Both flows reuse the same `Phoenix.PubSub` topic the SSH session
-  subscribes to, so messages posted in the browser stream in live.
-  Press `q` to quit.
+  ## Controls
 
-  ## Test mode
-
-  When started with `test_mode: {w, h}`, the underlying server uses
-  `ExRatatui`'s headless test backend — see
-  `test/phoenix_ex_ratatui_example/admin_tui_test.exs`.
+    * `1` / `2` — jump to a tab
+    * `h` / `left`, `l` / `right` — step tabs
+    * `Tab` — cycle tabs
+    * `q` — quit
   """
 
-  use ExRatatui.App
+  use ExRatatui.App, runtime: :reducer
 
-  alias ExRatatui.Event
-  alias ExRatatui.Focus
-  alias ExRatatui.Frame
-  alias ExRatatui.Layout
-  alias ExRatatui.Layout.Rect
-  alias ExRatatui.Style
+  alias ExRatatui.{Command, Event, Frame, Layout, Layout.Rect, Style, Subscription}
   alias ExRatatui.Text.{Line, Span}
-  alias ExRatatui.Widgets.{Block, Paragraph, Tabs}
+
+  alias ExRatatui.Widgets.{
+    Bar,
+    BarChart,
+    Block,
+    Chart,
+    Paragraph,
+    Sparkline,
+    Tabs
+  }
+
+  alias ExRatatui.Widgets.Chart.{Axis, Dataset}
   alias ExRatatui.Widgets.List, as: WList
   alias PhoenixExRatatuiExample.Chat
   alias PhoenixExRatatuiExample.Tui.MessageLine
 
-  @tabs ~w(Overview Messages)
-  @overview_panels [:stats, :recent]
+  @tabs ~w(Dashboard Messages)
+  @refresh_ms 1_000
+  @history_window 60
+  @top_posters 5
+
+  # Brand colors — mirror the Phoenix + ExRatatui visual identity.
+  @phoenix_orange {:rgb, 253, 79, 0}
+  @exratatui_violet {:rgb, 160, 93, 244}
+
+  # -- Reducer callbacks --
 
   @impl true
-  def mount(_opts) do
+  def init(_opts) do
     Chat.subscribe()
     boot_time = System.monotonic_time(:second)
+    stats = Chat.stats()
 
     state = %{
       tab: 0,
       messages: Chat.list_messages() |> Enum.reverse(),
-      stats: Chat.stats(),
+      stats: stats,
+      per_user: Chat.per_user_counts(),
       boot_time: boot_time,
       last_event_at: nil,
-      focus: Focus.new(@overview_panels)
+      notification: nil,
+      prev_total: stats.messages,
+      history: %{
+        total_msgs: List.duplicate(stats.messages, @history_window),
+        unique_users: List.duplicate(stats.unique_users, @history_window),
+        rate: List.duplicate(0, @history_window)
+      }
     }
 
     {:ok, state}
@@ -92,7 +106,7 @@ defmodule PhoenixExRatatuiExample.AdminTui do
 
     body_widgets =
       case state.tab do
-        0 -> overview_widgets(state, body_area)
+        0 -> dashboard_widgets(state, body_area)
         1 -> [{messages_list(state), body_area}]
       end
 
@@ -100,149 +114,335 @@ defmodule PhoenixExRatatuiExample.AdminTui do
   end
 
   @impl true
-  def handle_event(%Event.Key{code: "q", kind: "press"}, state) do
+  def update({:event, %Event.Key{code: "q", kind: "press"}}, state) do
     {:stop, state}
   end
 
-  # Tab / Shift+Tab only cycle panel focus while the Overview tab is
-  # active — on the Messages tab they switch tabs like the other
-  # shortcuts. We route to Focus.handle_key/2 first; if it consumed
-  # the event we stop, otherwise we fall through to tab navigation.
-  def handle_event(%Event.Key{code: code, kind: "press"} = key, %{tab: 0} = state)
-      when code in ["tab", "back_tab"] do
-    {focus, _} = Focus.handle_key(state.focus, key)
-    {:noreply, %{state | focus: focus}}
-  end
+  def update({:event, %Event.Key{code: "1", kind: "press"}}, state),
+    do: {:noreply, %{state | tab: 0}}
 
-  def handle_event(%Event.Key{code: "1", kind: "press"}, state) do
-    {:noreply, %{state | tab: 0}}
-  end
+  def update({:event, %Event.Key{code: "2", kind: "press"}}, state),
+    do: {:noreply, %{state | tab: 1}}
 
-  def handle_event(%Event.Key{code: "2", kind: "press"}, state) do
-    {:noreply, %{state | tab: 1}}
-  end
-
-  def handle_event(%Event.Key{code: code, kind: "press"}, state)
-      when code in ["h", "left"] do
-    {:noreply, %{state | tab: max(state.tab - 1, 0)}}
-  end
-
-  def handle_event(%Event.Key{code: code, kind: "press"}, state)
+  def update({:event, %Event.Key{code: code, kind: "press"}}, state)
       when code in ["l", "right"] do
     {:noreply, %{state | tab: min(state.tab + 1, length(@tabs) - 1)}}
   end
 
-  def handle_event(%Event.Key{code: "tab", kind: "press"}, state) do
+  def update({:event, %Event.Key{code: code, kind: "press"}}, state)
+      when code in ["h", "left"] do
+    {:noreply, %{state | tab: max(state.tab - 1, 0)}}
+  end
+
+  def update({:event, %Event.Key{code: "tab", kind: "press"}}, state) do
     {:noreply, %{state | tab: rem(state.tab + 1, length(@tabs))}}
   end
 
-  def handle_event(_event, state), do: {:noreply, state}
+  # A new chat message arrives over PubSub.
+  def update({:info, {:new_message, message}}, state) do
+    cmd =
+      Command.batch([
+        snapshot_command(),
+        Command.send_after(3_000, :clear_notification)
+      ])
 
-  @impl true
-  def handle_info({:new_message, message}, state) do
     {:noreply,
      %{
        state
        | messages: Enum.take([message | state.messages], 200),
-         stats: Chat.stats(),
-         last_event_at: DateTime.utc_now()
+         last_event_at: DateTime.utc_now(),
+         notification: "New message from #{message.user}"
+     }, commands: [cmd]}
+  end
+
+  # Periodic snapshot — fetches stats + per-user counts off the server
+  # process in a single async call.
+  def update({:info, :refresh_stats}, state) do
+    {:noreply, state, commands: [snapshot_command()], render?: false}
+  end
+
+  def update({:info, {:stats_refreshed, {stats, per_user}}}, state) do
+    delta = max(stats.messages - state.prev_total, 0)
+
+    history = %{
+      total_msgs: shift(state.history.total_msgs, stats.messages),
+      unique_users: shift(state.history.unique_users, stats.unique_users),
+      rate: shift(state.history.rate, delta)
+    }
+
+    {:noreply,
+     %{
+       state
+       | stats: stats,
+         per_user: per_user,
+         prev_total: stats.messages,
+         history: history
      }}
   end
 
-  def handle_info({:presence, _count}, state), do: {:noreply, state}
-  def handle_info(_msg, state), do: {:noreply, state}
+  def update({:info, :clear_notification}, state) do
+    {:noreply, %{state | notification: nil}}
+  end
 
-  ## Rendering helpers
+  def update(_msg, state), do: {:noreply, state}
+
+  @impl true
+  def subscriptions(_state) do
+    [Subscription.interval(:stats_refresh, @refresh_ms, :refresh_stats)]
+  end
+
+  # -- Top-level chrome --
 
   defp render_tabs(state) do
     %Tabs{
       titles: @tabs,
       selected: state.tab,
       style: %Style{fg: :gray},
-      highlight_style: %Style{fg: :cyan, modifiers: [:bold]},
+      highlight_style: %Style{fg: @exratatui_violet, modifiers: [:bold]},
       block: %Block{
         borders: [:all],
         border_type: :rounded,
         border_style: %Style{fg: :dark_gray},
-        title: "Phoenix + ExRatatui — Admin TUI"
+        title: brand_title()
       }
     }
   end
 
-  defp overview_widgets(state, area) do
+  defp brand_title do
+    %Line{
+      spans: [
+        %Span{content: " ", style: %Style{}},
+        %Span{
+          content: "Phoenix",
+          style: %Style{fg: @phoenix_orange, modifiers: [:bold]}
+        },
+        %Span{content: " + ", style: %Style{fg: :dark_gray}},
+        %Span{
+          content: "ExRatatui",
+          style: %Style{fg: @exratatui_violet, modifiers: [:bold]}
+        },
+        %Span{content: " — Admin TUI ", style: %Style{fg: :gray}}
+      ]
+    }
+  end
+
+  defp render_footer(state) do
+    hints = [
+      {"Tab", "cycle"},
+      {"1/2", "jump"},
+      {"h/l", "step"},
+      {"q", "quit"}
+    ]
+
+    spans =
+      hints
+      |> Enum.flat_map(fn {key, label} ->
+        [
+          %Span{content: "  ", style: %Style{}},
+          %Span{content: key, style: %Style{fg: @exratatui_violet, modifiers: [:bold]}},
+          %Span{content: " " <> label, style: %Style{fg: :dark_gray}}
+        ]
+      end)
+
+    spans =
+      case state.notification do
+        nil ->
+          spans
+
+        text ->
+          spans ++
+            [
+              %Span{content: "   │  ", style: %Style{fg: :dark_gray}},
+              %Span{
+                content: text,
+                style: %Style{fg: @phoenix_orange, modifiers: [:italic]}
+              }
+            ]
+      end
+
+    %Paragraph{
+      text: %Line{spans: spans},
+      block: %Block{
+        borders: [:top],
+        border_style: %Style{fg: :dark_gray}
+      }
+    }
+  end
+
+  # -- Dashboard tab --
+
+  defp dashboard_widgets(state, area) do
+    [header_area, middle_area, bottom_area] =
+      Layout.split(area, :vertical, [{:length, 5}, {:min, 0}, {:length, 10}])
+
     [left_area, right_area] =
-      Layout.split(area, :horizontal, [{:percentage, 50}, {:percentage, 50}])
+      Layout.split(middle_area, :horizontal, [{:percentage, 50}, {:percentage, 50}])
 
     [
-      {stats_panel(state), left_area},
-      {recent_messages_panel(state), right_area}
+      {overview_header(state), header_area},
+      {rate_sparkline(state), left_area},
+      {top_posters_bar_chart(state), right_area},
+      {totals_chart(state), bottom_area}
     ]
   end
 
-  defp stats_panel(state) do
+  defp overview_header(state) do
     uptime_seconds = System.monotonic_time(:second) - state.boot_time
 
-    last_event =
-      case state.last_event_at do
-        nil -> "—"
-        %DateTime{} = dt -> Calendar.strftime(dt, "%H:%M:%S UTC")
+    last_message =
+      case state.messages do
+        [] -> %Span{content: "(no messages yet)", style: %Style{fg: :dark_gray}}
+        [msg | _] -> last_message_span(msg)
       end
 
-    text =
-      """
-
-        Node:              #{node()}
-        BEAM uptime:       #{format_seconds(uptime_seconds)}
-
-        Total messages:    #{state.stats.messages}
-        Unique users:      #{state.stats.unique_users}
-
-        Last activity:     #{last_event}
-
-        Live LiveView URL: http://localhost:4000/
-      """
+    lines = [
+      %Line{
+        spans: [
+          label(" Node:    "),
+          value(to_string(node())),
+          label("    Uptime: "),
+          value(format_seconds(uptime_seconds))
+        ]
+      },
+      %Line{
+        spans: [
+          label(" Messages: "),
+          accent(to_string(state.stats.messages)),
+          label("   Users: "),
+          accent(to_string(state.stats.unique_users)),
+          label("   Web: "),
+          %Span{
+            content: "http://localhost:4000/",
+            style: %Style{fg: :cyan, modifiers: [:underlined]}
+          }
+        ]
+      },
+      %Line{spans: [label(" Last:    "), last_message]}
+    ]
 
     %Paragraph{
-      text: text,
-      style: %Style{fg: :white},
+      text: lines,
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: border_style(state.focus, :stats),
-        title: panel_title("Stats", state.focus, :stats)
+        border_style: %Style{fg: @exratatui_violet},
+        title: %Span{
+          content: " Overview ",
+          style: %Style{fg: @exratatui_violet, modifiers: [:bold]}
+        }
       }
     }
   end
 
-  defp recent_messages_panel(state) do
-    items =
-      case state.messages do
-        [] ->
-          [
-            %Line{
-              spans: [
-                %Span{content: "(no messages yet)", style: %Style{fg: :dark_gray}}
-              ]
-            }
-          ]
+  defp last_message_span(msg) do
+    %Span{
+      content: "#{msg.user}: #{truncate(msg.body, 60)}",
+      style: %Style{fg: MessageLine.user_color(msg.user)}
+    }
+  end
 
-        messages ->
-          messages
-          |> Enum.take(10)
-          |> Enum.map(&MessageLine.render(&1, max_body: 60))
-      end
+  defp label(text), do: %Span{content: text, style: %Style{fg: :dark_gray}}
+  defp value(text), do: %Span{content: text, style: %Style{fg: :white, modifiers: [:bold]}}
 
-    %WList{
-      items: items,
-      style: %Style{fg: :white},
+  defp accent(text),
+    do: %Span{content: text, style: %Style{fg: @exratatui_violet, modifiers: [:bold]}}
+
+  defp rate_sparkline(state) do
+    max_rate = Enum.max(state.history.rate, fn -> 0 end)
+
+    %Sparkline{
+      data: state.history.rate,
+      max: max(max_rate, 1),
+      style: %Style{fg: @phoenix_orange},
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: border_style(state.focus, :recent),
-        title: panel_title("Recent", state.focus, :recent)
+        border_style: %Style{fg: :dark_gray},
+        title: " Messages / tick "
       }
     }
   end
+
+  defp top_posters_bar_chart(state) do
+    bars =
+      state.per_user
+      |> Enum.take(@top_posters)
+      |> Enum.map(fn {user, count} ->
+        %Bar{
+          label: user,
+          value: count,
+          style: %Style{fg: MessageLine.user_color(user), modifiers: [:bold]}
+        }
+      end)
+
+    %BarChart{
+      data: bars,
+      direction: :horizontal,
+      bar_width: 1,
+      bar_gap: 0,
+      bar_style: %Style{fg: @exratatui_violet},
+      value_style: %Style{fg: :white, modifiers: [:bold]},
+      label_style: %Style{fg: :white},
+      block: %Block{
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :dark_gray},
+        title: " Top #{@top_posters} posters "
+      }
+    }
+  end
+
+  defp totals_chart(state) do
+    msg_data = Enum.with_index(state.history.total_msgs, fn v, i -> {i * 1.0, v * 1.0} end)
+
+    user_data =
+      Enum.with_index(state.history.unique_users, fn v, i -> {i * 1.0, v * 1.0} end)
+
+    msg_max = Enum.max(state.history.total_msgs, fn -> 0 end)
+    user_max = Enum.max(state.history.unique_users, fn -> 0 end)
+    y_max = max(max(msg_max, user_max), 1) * 1.0
+
+    %Chart{
+      datasets: [
+        %Dataset{
+          name: "messages",
+          data: msg_data,
+          marker: :braille,
+          graph_type: :line,
+          style: %Style{fg: @exratatui_violet}
+        },
+        %Dataset{
+          name: "users",
+          data: user_data,
+          marker: :braille,
+          graph_type: :line,
+          style: %Style{fg: @phoenix_orange}
+        }
+      ],
+      x_axis: %Axis{
+        title: "ticks ago",
+        bounds: {0.0, (@history_window - 1) * 1.0},
+        labels: ["-#{@history_window}s", "-#{div(@history_window, 2)}s", "now"],
+        labels_alignment: :center,
+        style: %Style{fg: :dark_gray}
+      },
+      y_axis: %Axis{
+        title: "count",
+        bounds: {0.0, y_max},
+        labels: ["0", Integer.to_string(trunc(y_max))],
+        style: %Style{fg: :dark_gray}
+      },
+      legend_position: :top_right,
+      block: %Block{
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :dark_gray},
+        title: " Totals over time "
+      }
+    }
+  end
+
+  # -- Messages tab --
 
   defp messages_list(state) do
     items =
@@ -252,8 +452,7 @@ defmodule PhoenixExRatatuiExample.AdminTui do
             %Line{
               spans: [
                 %Span{
-                  content:
-                    "(no messages yet — post one in the browser at http://localhost:4000/)",
+                  content: "(no messages yet — post one at http://localhost:4000/)",
                   style: %Style{fg: :dark_gray}
                 }
               ]
@@ -272,37 +471,34 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       block: %Block{
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: :cyan},
-        title: "Messages (newest first)"
+        border_style: %Style{fg: @exratatui_violet},
+        title: %Span{
+          content: " Messages (newest first) ",
+          style: %Style{fg: @exratatui_violet, modifiers: [:bold]}
+        }
       }
     }
   end
 
-  defp render_footer(state) do
-    hint =
-      case state.tab do
-        0 -> " Tab/Shift+Tab: focus panel   1/2: switch tabs   q: quit"
-        _ -> " Tab/1/2: switch tabs   q: quit"
-      end
+  # -- Helpers --
 
-    %Paragraph{
-      text: hint,
-      style: %Style{fg: :dark_gray},
-      block: %Block{
-        borders: [:top],
-        border_style: %Style{fg: :dark_gray}
-      }
-    }
+  defp snapshot_command do
+    Command.async(
+      fn -> {Chat.stats(), Chat.per_user_counts()} end,
+      fn payload -> {:stats_refreshed, payload} end
+    )
   end
 
-  defp border_style(focus, id) do
-    if Focus.focused?(focus, id),
-      do: %Style{fg: :cyan, modifiers: [:bold]},
-      else: %Style{fg: :dark_gray}
+  defp shift(list, new_val) when is_list(list) do
+    tl(list) ++ [new_val]
   end
 
-  defp panel_title(base, focus, id) do
-    if Focus.focused?(focus, id), do: "#{base} ●", else: base
+  defp truncate(string, max) when is_binary(string) do
+    if String.length(string) > max do
+      String.slice(string, 0, max - 1) <> "…"
+    else
+      string
+    end
   end
 
   @doc false
@@ -323,10 +519,6 @@ defmodule PhoenixExRatatuiExample.AdminTui do
   @doc """
   Starts the admin TUI in the local terminal and blocks until the
   user quits with `q`.
-
-  Accepts the same options as `start_link/1`. Intended for `iex -S
-  mix phx.server` and `mix run -e "..."`-style invocations — see the
-  module doc for examples.
   """
   def run(opts \\ []) do
     {:ok, pid} = start_link(opts)

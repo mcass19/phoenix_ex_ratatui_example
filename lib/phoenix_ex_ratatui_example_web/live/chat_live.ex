@@ -84,6 +84,7 @@ defmodule PhoenixExRatatuiExampleWeb.ChatLive do
           for={@form}
           id="message-form"
           phx-submit="send"
+          phx-hook=".ResetOnSend"
         >
           <.input
             field={@form[:body]}
@@ -94,6 +95,13 @@ defmodule PhoenixExRatatuiExampleWeb.ChatLive do
           <div class="flex justify-end">
             <.button type="submit">Send</.button>
           </div>
+          <script :type={Phoenix.LiveView.ColocatedHook} name=".ResetOnSend">
+            export default {
+              mounted() {
+                this.handleEvent("message:sent", () => this.el.reset())
+              }
+            }
+          </script>
         </.form>
 
         <p class="text-xs opacity-60 text-center">
@@ -110,10 +118,10 @@ defmodule PhoenixExRatatuiExampleWeb.ChatLive do
   def handle_event("send", %{"message" => %{"body" => body}}, socket) do
     case Chat.post_message(socket.assigns.username, body) do
       {:ok, _message} ->
-        # The {:new_message, _} broadcast we receive in handle_info
-        # will push the message into the stream — so we only need to
-        # reset the form here.
-        {:noreply, assign(socket, :form, to_form(%{"body" => ""}, as: :message))}
+        {:noreply,
+         socket
+         |> assign(:form, to_form(%{"body" => ""}, as: :message))
+         |> push_event("message:sent", %{})}
 
       {:error, _reason} ->
         {:noreply,

@@ -1,19 +1,26 @@
 defmodule PhoenixExRatatuiExample.AdminTuiTest do
   @moduledoc """
-  Tests for the SSH-served admin TUI.
+  Tests for the admin TUI.
 
-  Most tests drive `mount/1` and `render/2` directly with manufactured
-  state — those run without touching ExRatatui's NIF-backed terminal.
-  The "live render" describe boots the real `ExRatatui.Server` against
-  a headless test backend so the end-to-end render path is covered.
+  Unit tests drive `init/1`, `render/2`, and `update/2` with
+  manufactured state — no NIF, no real terminal. The "live render"
+  describe boots the real `ExRatatui.Server` against a headless test
+  backend so the end-to-end render path is covered.
   """
 
   use ExUnit.Case, async: false
 
   alias ExRatatui.Event
-  alias ExRatatui.Focus
   alias ExRatatui.Frame
   alias ExRatatui.Text.Line
+
+  alias ExRatatui.Widgets.{
+    BarChart,
+    Chart,
+    Paragraph,
+    Sparkline
+  }
+
   alias PhoenixExRatatuiExample.AdminTui
   alias PhoenixExRatatuiExample.Chat
 
@@ -22,107 +29,105 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
     :ok
   end
 
-  describe "mount/1" do
-    test "subscribes to the chat topic, seeds messages, and sets up focus" do
+  describe "init/1" do
+    test "subscribes to the chat topic, seeds messages, and primes history buffers" do
       {:ok, _} = Chat.post_message("alice", "hello")
       {:ok, _} = Chat.post_message("bob", "world")
 
-      {:ok, state} = AdminTui.mount([])
+      {:ok, state} = AdminTui.init([])
 
       assert state.tab == 0
       assert length(state.messages) == 2
       assert %{messages: 2, unique_users: 2} = state.stats
-      assert %Focus{} = state.focus
-      assert Focus.current(state.focus) == :stats
+      assert state.per_user == [{"alice", 1}, {"bob", 1}]
+      assert state.prev_total == 2
+      assert length(state.history.total_msgs) == 60
+      assert Enum.all?(state.history.rate, &(&1 == 0))
 
-      # Subscribed in mount → next post should come straight to us.
+      # Subscribed in init → next post should come straight to us.
       {:ok, message} = Chat.post_message("carol", "ping")
       assert_receive {:new_message, ^message}
     end
 
     test "starts at tab 0 with an empty room" do
-      {:ok, state} = AdminTui.mount([])
+      {:ok, state} = AdminTui.init([])
       assert state.tab == 0
       assert state.messages == []
+      assert state.notification == nil
+      assert state.per_user == []
       assert %{messages: 0, unique_users: 0} = state.stats
     end
   end
 
-  describe "render/2 — overview tab" do
-    test "produces tabs + two focused panels + footer, all sized to the frame" do
-      {:ok, state} = AdminTui.mount([])
+  describe "render/2 — dashboard tab" do
+    test "produces tabs + overview header + sparkline + bar chart + totals chart + footer" do
+      {:ok, state} = AdminTui.init([])
 
-      widgets = AdminTui.render(state, %Frame{width: 80, height: 24})
+      widgets = AdminTui.render(state, %Frame{width: 120, height: 40})
 
-      # tabs, stats_panel, recent_panel, footer
-      assert length(widgets) == 4
+      assert length(widgets) == 6
 
-      assert Enum.all?(widgets, fn {_w, rect} -> is_struct(rect, ExRatatui.Layout.Rect) end)
-
-      # Body panels should sit side-by-side and their heights should
-      # sum with tabs + footer to the full frame height.
-      heights =
-        widgets
-        |> Enum.map(fn {_w, rect} -> rect.height end)
-
-      [tabs_h, left_h, _right_h, footer_h] = heights
-      assert tabs_h + left_h + footer_h == 24
+      kinds = Enum.map(widgets, fn {w, _rect} -> w.__struct__ end)
+      assert Paragraph in kinds
+      assert Sparkline in kinds
+      assert BarChart in kinds
+      assert Chart in kinds
     end
 
-    test "stats panel shows node name and stats" do
-      {:ok, _} = Chat.post_message("alice", "hello")
-      {:ok, state} = AdminTui.mount([])
+    test "overview header shows rich-text node and totals" do
+      {:ok, _} = Chat.post_message("alice", "hi there")
+      {:ok, state} = AdminTui.init([])
 
-      [_tabs, {stats_panel, _}, _recent, _footer] =
-        AdminTui.render(state, %Frame{width: 80, height: 24})
+      widgets = AdminTui.render(state, %Frame{width: 120, height: 40})
 
-      assert %ExRatatui.Widgets.Paragraph{text: text, block: block} = stats_panel
-      assert text =~ "Node:"
-      assert text =~ "Total messages:    1"
-      assert block.title =~ "Stats"
+      header =
+        Enum.find_value(widgets, fn
+          {%Paragraph{text: [%Line{} | _]} = p, _} -> p
+          _ -> nil
+        end)
+
+      assert header
+      # text is a [%Line{}], so flatten spans for content assertions.
+      flat =
+        header.text
+        |> Enum.flat_map(& &1.spans)
+        |> Enum.map_join("", & &1.content)
+
+      assert flat =~ "Node:"
+      assert flat =~ "Uptime:"
+      # stats.messages is 1 after one post.
+      assert flat =~ "Messages:"
+      assert flat =~ "1"
+      assert flat =~ "alice: hi there"
     end
 
-    test "recent panel renders messages as rich-text Lines" do
-      {:ok, _} = Chat.post_message("alice", "the answer is 42")
-      {:ok, state} = AdminTui.mount([])
+    test "bar chart reflects top posters" do
+      {:ok, _} = Chat.post_message("alice", "1")
+      {:ok, _} = Chat.post_message("alice", "2")
+      {:ok, _} = Chat.post_message("bob", "3")
 
-      [_tabs, _stats, {recent, _}, _footer] =
-        AdminTui.render(state, %Frame{width: 80, height: 24})
+      {:ok, state} = AdminTui.init([])
 
-      assert %ExRatatui.Widgets.List{items: [%Line{spans: spans} | _]} = recent
+      widgets = AdminTui.render(state, %Frame{width: 120, height: 40})
 
-      text = Enum.map_join(spans, "", & &1.content)
-      assert text =~ "alice"
-      assert text =~ "the answer is 42"
-    end
+      bar_chart =
+        Enum.find_value(widgets, fn
+          {%BarChart{} = b, _} -> b
+          _ -> nil
+        end)
 
-    test "focused panel border uses cyan; unfocused uses dark_gray" do
-      {:ok, state} = AdminTui.mount([])
-
-      [_tabs, {stats, _}, {recent, _}, _footer] =
-        AdminTui.render(state, %Frame{width: 80, height: 24})
-
-      assert stats.block.border_style.fg == :cyan
-      assert recent.block.border_style.fg == :dark_gray
-
-      # Rotate focus and re-render.
-      state = %{state | focus: Focus.next(state.focus)}
-
-      [_tabs, {stats, _}, {recent, _}, _footer] =
-        AdminTui.render(state, %Frame{width: 80, height: 24})
-
-      assert stats.block.border_style.fg == :dark_gray
-      assert recent.block.border_style.fg == :cyan
+      assert Enum.map(bar_chart.data, & &1.label) == ["alice", "bob"]
+      assert Enum.map(bar_chart.data, & &1.value) == [2, 1]
     end
   end
 
   describe "render/2 — messages tab" do
-    test "renders rich-text message lines when tab == 1" do
+    test "renders rich-text message lines" do
       {:ok, _} = Chat.post_message("alice", "the answer is 42")
-      {:ok, state} = AdminTui.mount([])
+      {:ok, state} = AdminTui.init([])
       state = %{state | tab: 1}
 
-      [_tabs, {body, _}, _footer] = AdminTui.render(state, %Frame{width: 80, height: 24})
+      [_tabs, {body, _}, _footer] = AdminTui.render(state, %Frame{width: 120, height: 40})
 
       assert %ExRatatui.Widgets.List{items: [%Line{spans: spans}]} = body
       text = Enum.map_join(spans, "", & &1.content)
@@ -130,112 +135,136 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
       assert text =~ "the answer is 42"
     end
 
-    test "messages tab shows placeholder when empty" do
-      {:ok, state} = AdminTui.mount([])
+    test "empty state renders a placeholder Line" do
+      {:ok, state} = AdminTui.init([])
       state = %{state | tab: 1}
 
-      [_tabs, {body, _}, _footer] = AdminTui.render(state, %Frame{width: 80, height: 24})
+      [_tabs, {body, _}, _footer] = AdminTui.render(state, %Frame{width: 120, height: 40})
 
       assert %ExRatatui.Widgets.List{items: [%Line{spans: [span]}]} = body
       assert span.content =~ "no messages yet"
     end
+  end
 
-    test "long message bodies are truncated with an ellipsis" do
-      long_body = String.duplicate("x", 200)
-      {:ok, _} = Chat.post_message("alice", long_body)
-      {:ok, state} = AdminTui.mount([])
-      state = %{state | tab: 1}
+  describe "render/2 — footer" do
+    test "footer shows notification when present" do
+      {:ok, state} = AdminTui.init([])
+      state = %{state | notification: "New message from alice"}
 
-      [_tabs, {body, _}, _footer] = AdminTui.render(state, %Frame{width: 80, height: 24})
+      widgets = AdminTui.render(state, %Frame{width: 120, height: 40})
 
-      assert %ExRatatui.Widgets.List{items: [%Line{spans: spans}]} = body
+      {footer, _} = List.last(widgets)
+      assert %Paragraph{text: %Line{spans: spans}} = footer
       text = Enum.map_join(spans, "", & &1.content)
-      assert String.ends_with?(text, "…")
+      assert text =~ "New message from alice"
     end
   end
 
-  describe "handle_event/2" do
+  describe "update/2 — events" do
     test "q quits" do
-      {:ok, state} = AdminTui.mount([])
-      assert {:stop, ^state} = AdminTui.handle_event(key("q"), state)
-    end
-
-    test "on overview tab, Tab rotates focus instead of switching tabs" do
-      {:ok, state} = AdminTui.mount([])
-      assert Focus.current(state.focus) == :stats
-
-      {:noreply, state} = AdminTui.handle_event(key("tab"), state)
-      assert state.tab == 0
-      assert Focus.current(state.focus) == :recent
-
-      {:noreply, state} = AdminTui.handle_event(key("tab"), state)
-      assert state.tab == 0
-      assert Focus.current(state.focus) == :stats
-    end
-
-    test "on messages tab, Tab cycles tabs" do
-      {:ok, state} = AdminTui.mount([])
-      state = %{state | tab: 1}
-
-      {:noreply, state} = AdminTui.handle_event(key("tab"), state)
-      assert state.tab == 0
+      {:ok, state} = AdminTui.init([])
+      assert {:stop, ^state} = AdminTui.update({:event, key("q")}, state)
     end
 
     test "number keys jump directly to tabs" do
-      {:ok, state} = AdminTui.mount([])
+      {:ok, state} = AdminTui.init([])
 
-      {:noreply, state} = AdminTui.handle_event(key("2"), state)
+      {:noreply, state} = AdminTui.update({:event, key("2")}, state)
       assert state.tab == 1
 
-      {:noreply, state} = AdminTui.handle_event(key("1"), state)
+      {:noreply, state} = AdminTui.update({:event, key("1")}, state)
       assert state.tab == 0
     end
 
-    test "h / left step back one tab, l / right step forward one tab" do
-      {:ok, state} = AdminTui.mount([])
+    test "l / right step forward, h / left step back, tab cycles" do
+      {:ok, state} = AdminTui.init([])
 
-      # From tab 0, left/h clamp at 0.
-      {:noreply, same} = AdminTui.handle_event(key("h"), state)
+      {:noreply, state} = AdminTui.update({:event, key("l")}, state)
+      assert state.tab == 1
+      # clamp at last tab
+      {:noreply, same} = AdminTui.update({:event, key("right")}, state)
+      assert same.tab == 1
+
+      {:noreply, state} = AdminTui.update({:event, key("h")}, same)
+      assert state.tab == 0
+      # clamp at first tab
+      {:noreply, same} = AdminTui.update({:event, key("left")}, state)
       assert same.tab == 0
 
-      # Move forward with l/right.
-      {:noreply, state} = AdminTui.handle_event(key("l"), state)
+      # tab cycles 0 → 1 → 0
+      {:noreply, state} = AdminTui.update({:event, key("tab")}, same)
       assert state.tab == 1
-
-      {:noreply, state} = AdminTui.handle_event(key("right"), state)
-      assert state.tab == 1
-
-      # Step back with left.
-      {:noreply, state} = AdminTui.handle_event(key("left"), state)
+      {:noreply, state} = AdminTui.update({:event, key("tab")}, state)
       assert state.tab == 0
     end
 
     test "unknown events are ignored" do
-      {:ok, state} = AdminTui.mount([])
-      assert {:noreply, ^state} = AdminTui.handle_event(key("z"), state)
+      {:ok, state} = AdminTui.init([])
+      assert {:noreply, ^state} = AdminTui.update({:event, key("z")}, state)
+    end
+
+    test "unknown info messages are swallowed by the catch-all clause" do
+      {:ok, state} = AdminTui.init([])
+      assert {:noreply, ^state} = AdminTui.update({:info, :some_unexpected_message}, state)
+      assert {:noreply, ^state} = AdminTui.update(:totally_bogus, state)
     end
   end
 
-  describe "handle_info/2" do
-    test "{:new_message, msg} prepends to messages and updates stats" do
-      {:ok, state} = AdminTui.mount([])
+  describe "update/2 — info messages" do
+    test "{:new_message, msg} prepends to messages and shows a notification with a batch command" do
+      {:ok, state} = AdminTui.init([])
       {:ok, message} = Chat.post_message("alice", "hi")
 
-      {:noreply, state} = AdminTui.handle_info({:new_message, message}, state)
+      {:noreply, next, opts} = AdminTui.update({:info, {:new_message, message}}, state)
 
-      assert [^message | _] = state.messages
-      assert state.stats.messages == 1
-      assert %DateTime{} = state.last_event_at
+      assert [^message | _] = next.messages
+      assert %DateTime{} = next.last_event_at
+      assert next.notification =~ "alice"
+      assert [%ExRatatui.Command{kind: :batch}] = opts[:commands]
     end
 
-    test "ignores presence events" do
-      {:ok, state} = AdminTui.mount([])
-      assert {:noreply, ^state} = AdminTui.handle_info({:presence, 5}, state)
+    test ":refresh_stats returns an async command and skips render" do
+      {:ok, state} = AdminTui.init([])
+
+      {:noreply, ^state, opts} = AdminTui.update({:info, :refresh_stats}, state)
+
+      assert opts[:render?] == false
+      assert [%ExRatatui.Command{kind: :async}] = opts[:commands]
     end
 
-    test "ignores unknown messages" do
-      {:ok, state} = AdminTui.mount([])
-      assert {:noreply, ^state} = AdminTui.handle_info(:something_else, state)
+    test "{:stats_refreshed, {stats, per_user}} updates state and shifts the history window" do
+      {:ok, state} = AdminTui.init([])
+
+      new_stats = %{messages: 5, unique_users: 3}
+      per_user = [{"alice", 3}, {"bob", 2}]
+
+      {:noreply, next} =
+        AdminTui.update({:info, {:stats_refreshed, {new_stats, per_user}}}, state)
+
+      assert next.stats == new_stats
+      assert next.per_user == per_user
+      assert next.prev_total == 5
+      assert List.last(next.history.total_msgs) == 5
+      assert List.last(next.history.rate) == 5
+      assert length(next.history.total_msgs) == 60
+    end
+
+    test ":clear_notification clears the notification" do
+      {:ok, state} = AdminTui.init([])
+      state = %{state | notification: "something"}
+
+      {:noreply, next} = AdminTui.update({:info, :clear_notification}, state)
+      assert next.notification == nil
+    end
+  end
+
+  describe "subscriptions/1" do
+    test "declares a 1-second stats refresh interval" do
+      {:ok, state} = AdminTui.init([])
+      subs = AdminTui.subscriptions(state)
+
+      assert [%ExRatatui.Subscription{id: :stats_refresh, kind: :interval, interval_ms: 1_000}] =
+               subs
     end
   end
 
@@ -266,7 +295,7 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
         ExRatatui.Server.start_link(
           mod: AdminTui,
           name: nil,
-          test_mode: {120, 30}
+          test_mode: {140, 40}
         )
 
       try do
@@ -275,8 +304,15 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
 
         content = ExRatatui.get_buffer_content(terminal_ref)
 
-        assert content =~ "Phoenix + ExRatatui"
-        assert content =~ "Overview"
+        assert content =~ "Phoenix"
+        assert content =~ "ExRatatui"
+        assert content =~ "Admin TUI"
+        assert content =~ "Dashboard"
+
+        snapshot = ExRatatui.Runtime.snapshot(pid)
+        assert snapshot.mode == :reducer
+        assert snapshot.render_count >= 1
+        assert snapshot.subscription_count == 1
       after
         ref = Process.monitor(pid)
         GenServer.stop(pid)

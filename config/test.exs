@@ -12,8 +12,6 @@ config :phoenix_ex_ratatui_example, PhoenixExRatatuiExampleWeb.Endpoint,
 # :test_mode backend.
 config :phoenix_ex_ratatui_example, :ssh_admin, false
 config :phoenix_ex_ratatui_example, :distributed_admin, false
-config :phoenix_ex_ratatui_example, :ssh_stats_reducer, false
-config :phoenix_ex_ratatui_example, :distributed_stats_reducer, false
 
 # Print only warnings and errors during test
 config :logger, level: :warning
