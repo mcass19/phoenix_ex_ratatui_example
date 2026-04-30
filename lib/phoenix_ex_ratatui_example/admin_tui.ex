@@ -11,10 +11,11 @@ defmodule PhoenixExRatatuiExample.AdminTui do
   ## Tabs
 
     * **1 · Dashboard** — rich-text overview header (node, uptime,
-      totals, last message) · `Sparkline` of messages per tick over
-      the last 60 seconds · horizontal `BarChart` of the top posters ·
-      two-dataset `Chart` of cumulative messages and unique users
-      over the history window.
+      totals, last message) · full-width `List` of every poster with
+      their message count, names colored by the same hash-based
+      palette used in the Messages tab · single-dataset `Chart` of
+      messages received in the last 60 seconds, which rises with
+      activity and decays as messages age out of the window.
     * **2 · Messages** — live-tail of the chat room. Each message
       renders as a `%Line{}` of colored `%Span{}`s via
       `PhoenixExRatatuiExample.Tui.MessageLine`: dim-gray timestamp,
@@ -47,12 +48,9 @@ defmodule PhoenixExRatatuiExample.AdminTui do
   alias ExRatatui.Text.{Line, Span}
 
   alias ExRatatui.Widgets.{
-    Bar,
-    BarChart,
     Block,
     Chart,
     Paragraph,
-    Sparkline,
     Tabs
   }
 
@@ -64,7 +62,6 @@ defmodule PhoenixExRatatuiExample.AdminTui do
   @tabs ~w(Dashboard Messages)
   @refresh_ms 1_000
   @history_window 60
-  @top_posters 5
 
   # Brand colors — mirror the Phoenix + ExRatatui visual identity.
   @phoenix_orange {:rgb, 253, 79, 0}
@@ -88,9 +85,8 @@ defmodule PhoenixExRatatuiExample.AdminTui do
       notification: nil,
       prev_total: stats.messages,
       history: %{
-        total_msgs: List.duplicate(stats.messages, @history_window),
-        unique_users: List.duplicate(stats.unique_users, @history_window),
-        rate: List.duplicate(0, @history_window)
+        rate: List.duplicate(0, @history_window),
+        windowed: List.duplicate(0, @history_window)
       }
     }
 
@@ -147,12 +143,8 @@ defmodule PhoenixExRatatuiExample.AdminTui do
 
   def update({:info, {:stats_refreshed, {stats, per_user}}}, state) do
     delta = max(stats.messages - state.prev_total, 0)
-
-    history = %{
-      total_msgs: shift(state.history.total_msgs, stats.messages),
-      unique_users: shift(state.history.unique_users, stats.unique_users),
-      rate: shift(state.history.rate, delta)
-    }
+    rate = shift(state.history.rate, delta)
+    windowed = shift(state.history.windowed, Enum.sum(rate))
 
     {:noreply,
      %{
@@ -160,7 +152,7 @@ defmodule PhoenixExRatatuiExample.AdminTui do
        | stats: stats,
          per_user: per_user,
          prev_total: stats.messages,
-         history: history
+         history: %{rate: rate, windowed: windowed}
      }}
   end
 
@@ -224,17 +216,13 @@ defmodule PhoenixExRatatuiExample.AdminTui do
   # -- Dashboard tab --
 
   defp dashboard_widgets(state, area) do
-    [header_area, middle_area, bottom_area] =
-      Layout.split(area, :vertical, [{:length, 5}, {:min, 0}, {:length, 10}])
-
-    [left_area, right_area] =
-      Layout.split(middle_area, :horizontal, [{:percentage, 50}, {:percentage, 50}])
+    [header_area, posters_area, chart_area] =
+      Layout.split(area, :vertical, [{:length, 5}, {:min, 0}, {:length, 12}])
 
     [
       {overview_header(state), header_area},
-      {rate_sparkline(state), left_area},
-      {top_posters_bar_chart(state), right_area},
-      {totals_chart(state), bottom_area}
+      {posters_list(state), posters_area},
+      {windowed_chart(state), chart_area}
     ]
   end
 
@@ -299,80 +287,82 @@ defmodule PhoenixExRatatuiExample.AdminTui do
   defp accent(text),
     do: %Span{content: text, style: %Style{fg: :blue, modifiers: [:bold]}}
 
-  defp rate_sparkline(state) do
-    max_rate = Enum.max(state.history.rate, fn -> 0 end)
+  defp posters_list(state) do
+    items =
+      case state.per_user do
+        [] ->
+          [
+            %Line{
+              spans: [
+                %Span{
+                  content: " (no posts yet — chat at http://localhost:4000/) ",
+                  style: %Style{fg: :dark_gray}
+                }
+              ]
+            }
+          ]
 
-    %Sparkline{
-      data: state.history.rate,
-      max: max(max_rate, 1),
-      style: %Style{fg: @phoenix_orange},
+        pairs ->
+          max_count = pairs |> Enum.map(&elem(&1, 1)) |> Enum.max(fn -> 1 end)
+          Enum.map(pairs, &poster_line(&1, max_count))
+      end
+
+    %WList{
+      items: items,
+      style: %Style{fg: :white},
       block: %Block{
         borders: [:all],
         border_type: :rounded,
         border_style: %Style{fg: :blue},
-        title: " Messages / tick "
-      }
-    }
-  end
-
-  defp top_posters_bar_chart(state) do
-    bars =
-      state.per_user
-      |> Enum.take(@top_posters)
-      |> Enum.map(fn {user, count} ->
-        %Bar{
-          label: user,
-          value: count,
-          style: %Style{fg: MessageLine.user_color(user), modifiers: [:bold]}
+        title: %Line{
+          spans: [
+            %Span{content: " Posters ", style: %Style{fg: :blue, modifiers: [:bold]}},
+            %Span{content: "(#{length(state.per_user)}) ", style: %Style{fg: :dark_gray}}
+          ]
         }
-      end)
-
-    %BarChart{
-      data: bars,
-      direction: :horizontal,
-      bar_width: 1,
-      bar_gap: 0,
-      bar_style: %Style{fg: @exratatui_violet},
-      value_style: %Style{fg: :white, modifiers: [:bold]},
-      label_style: %Style{fg: :white},
-      block: %Block{
-        borders: [:all],
-        border_type: :rounded,
-        border_style: %Style{fg: :blue},
-        title: " Top #{@top_posters} posters "
       }
     }
   end
 
-  defp totals_chart(state) do
-    msg_data = Enum.with_index(state.history.total_msgs, fn v, i -> {i * 1.0, v * 1.0} end)
+  defp poster_line({user, count}, max_count) do
+    name = String.pad_trailing(truncate(user, 24), 24)
+    count_str = String.pad_leading(to_string(count), 4)
+    bar_width = round(count / max(max_count, 1) * 24)
+    bar = String.duplicate("█", bar_width)
+    rest = String.duplicate("·", 24 - bar_width)
 
-    user_data =
-      Enum.with_index(state.history.unique_users, fn v, i -> {i * 1.0, v * 1.0} end)
+    %Line{
+      spans: [
+        %Span{content: " ", style: %Style{}},
+        %Span{
+          content: name,
+          style: %Style{fg: MessageLine.user_color(user), modifiers: [:bold]}
+        },
+        %Span{content: " ", style: %Style{}},
+        %Span{content: count_str, style: %Style{fg: :white, modifiers: [:bold]}},
+        %Span{content: "  ", style: %Style{}},
+        %Span{content: bar, style: %Style{fg: @exratatui_violet}},
+        %Span{content: rest, style: %Style{fg: :dark_gray}}
+      ]
+    }
+  end
 
-    msg_max = Enum.max(state.history.total_msgs, fn -> 0 end)
-    user_max = Enum.max(state.history.unique_users, fn -> 0 end)
-    y_max = max(max(msg_max, user_max), 1) * 1.0
+  defp windowed_chart(state) do
+    data = Enum.with_index(state.history.windowed, fn v, i -> {i * 1.0, v * 1.0} end)
+    y_max = max(Enum.max(state.history.windowed, fn -> 0 end), 1) * 1.0
 
     %Chart{
       datasets: [
         %Dataset{
-          name: "messages",
-          data: msg_data,
+          name: "msgs (60s)",
+          data: data,
           marker: :braille,
           graph_type: :line,
           style: %Style{fg: @exratatui_violet}
-        },
-        %Dataset{
-          name: "users",
-          data: user_data,
-          marker: :braille,
-          graph_type: :line,
-          style: %Style{fg: @phoenix_orange}
         }
       ],
       x_axis: %Axis{
-        title: "ticks ago",
+        title: "seconds ago",
         bounds: {0.0, (@history_window - 1) * 1.0},
         labels: ["-#{@history_window}s", "-#{div(@history_window, 2)}s", "now"],
         labels_alignment: :center,
@@ -389,7 +379,14 @@ defmodule PhoenixExRatatuiExample.AdminTui do
         borders: [:all],
         border_type: :rounded,
         border_style: %Style{fg: :blue},
-        title: " Totals over time "
+        title: %Line{
+          spans: [
+            %Span{
+              content: " Messages in last 60s ",
+              style: %Style{fg: :blue, modifiers: [:bold]}
+            }
+          ]
+        }
       }
     }
   end

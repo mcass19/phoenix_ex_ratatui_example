@@ -14,12 +14,14 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
   alias ExRatatui.Frame
   alias ExRatatui.Text.Line
 
+  alias ExRatatui.Text.Span
+
   alias ExRatatui.Widgets.{
-    BarChart,
     Chart,
-    Paragraph,
-    Sparkline
+    Paragraph
   }
+
+  alias ExRatatui.Widgets.List, as: WList
 
   alias PhoenixExRatatuiExample.AdminTui
   alias PhoenixExRatatuiExample.Chat
@@ -41,8 +43,10 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
       assert %{messages: 2, unique_users: 2} = state.stats
       assert state.per_user == [{"alice", 1}, {"bob", 1}]
       assert state.prev_total == 2
-      assert length(state.history.total_msgs) == 60
+      assert length(state.history.rate) == 60
+      assert length(state.history.windowed) == 60
       assert Enum.all?(state.history.rate, &(&1 == 0))
+      assert Enum.all?(state.history.windowed, &(&1 == 0))
 
       # Subscribed in init → next post should come straight to us.
       {:ok, message} = Chat.post_message("carol", "ping")
@@ -60,17 +64,16 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
   end
 
   describe "render/2 — dashboard tab" do
-    test "produces tabs + overview header + sparkline + bar chart + totals chart + footer" do
+    test "produces tabs + overview header + posters list + windowed chart + footer" do
       {:ok, state} = AdminTui.init([])
 
       widgets = AdminTui.render(state, %Frame{width: 120, height: 40})
 
-      assert length(widgets) == 6
+      assert length(widgets) == 5
 
       kinds = Enum.map(widgets, fn {w, _rect} -> w.__struct__ end)
       assert Paragraph in kinds
-      assert Sparkline in kinds
-      assert BarChart in kinds
+      assert WList in kinds
       assert Chart in kinds
     end
 
@@ -101,7 +104,7 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
       assert flat =~ "alice: hi there"
     end
 
-    test "bar chart reflects top posters" do
+    test "posters list shows every poster with their count, ordered by count desc" do
       {:ok, _} = Chat.post_message("alice", "1")
       {:ok, _} = Chat.post_message("alice", "2")
       {:ok, _} = Chat.post_message("bob", "3")
@@ -110,14 +113,27 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
 
       widgets = AdminTui.render(state, %Frame{width: 120, height: 40})
 
-      bar_chart =
+      list =
         Enum.find_value(widgets, fn
-          {%BarChart{} = b, _} -> b
+          {%WList{} = l, _} -> l
           _ -> nil
         end)
 
-      assert Enum.map(bar_chart.data, & &1.label) == ["alice", "bob"]
-      assert Enum.map(bar_chart.data, & &1.value) == [2, 1]
+      assert length(list.items) == 2
+
+      texts =
+        Enum.map(list.items, fn %Line{spans: spans} ->
+          Enum.map_join(spans, "", & &1.content)
+        end)
+
+      assert hd(texts) =~ "alice"
+      assert hd(texts) =~ "2"
+      assert Enum.at(texts, 1) =~ "bob"
+      assert Enum.at(texts, 1) =~ "1"
+
+      # Count of posters surfaces in the block title.
+      assert %Line{spans: title_spans} = list.block.title
+      assert Enum.any?(title_spans, fn %Span{content: c} -> c =~ "(2)" end)
     end
   end
 
@@ -221,9 +237,10 @@ defmodule PhoenixExRatatuiExample.AdminTuiTest do
       assert next.stats == new_stats
       assert next.per_user == per_user
       assert next.prev_total == 5
-      assert List.last(next.history.total_msgs) == 5
       assert List.last(next.history.rate) == 5
-      assert length(next.history.total_msgs) == 60
+      assert List.last(next.history.windowed) == 5
+      assert length(next.history.rate) == 60
+      assert length(next.history.windowed) == 60
     end
 
     test ":clear_notification clears the notification" do
